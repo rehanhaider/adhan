@@ -1,4 +1,6 @@
 # Raspberry Pi Adhan Clock
+[![FOSSA Status](https://app.fossa.com/api/projects/git%2Bgithub.com%2Fjustgoodin%2Fadhan.svg?type=shield)](https://app.fossa.com/projects/git%2Bgithub.com%2Fjustgoodin%2Fadhan?ref=badge_shield)
+
 This projects uses a python script which automatically calculates [adhan](https://en.wikipedia.org/wiki/Adhan) times every day and plays all five adhans at their scheduled time using cron. 
 
 ## Prerequisites
@@ -126,3 +128,7 @@ I have made modifications / bug fixes but I've used the following as starting po
 * Python code to calculate adhan times: http://praytimes.org/code/ 
 * Basic code to turn the above into an adhan clock: http://randomconsultant.blogspot.co.uk/2013/07/turn-your-raspberry-pi-into-azaanprayer.html
 * Cron scheduler: https://pypi.python.org/pypi/python-crontab/ 
+
+
+## License
+[![FOSSA Status](https://app.fossa.com/api/projects/git%2Bgithub.com%2Fjustgoodin%2Fadhan.svg?type=large)](https://app.fossa.com/projects/git%2Bgithub.com%2Fjustgoodin%2Fadhan?ref=badge_large)
