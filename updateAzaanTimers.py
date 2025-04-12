@@ -5,6 +5,7 @@ import time
 import sys
 from os.path import dirname, abspath, join as pathjoin
 import argparse
+import getpass
 from configparser import ConfigParser
 
 
@@ -14,7 +15,7 @@ from modules.praytimes import PrayTimes
 PT = PrayTimes() 
 
 from crontab import CronTab
-system_cron = CronTab(user='pi')
+system_cron = CronTab(user=getpass.getuser())
 
 
 # HELPER FUNCTIONS
@@ -40,6 +41,7 @@ def getConfig():
     # Parse arguments
     parser = parseArgs()
     args = parser.parse_args()
+
     
     # Initialise and read config file if present
     config = ConfigParser()
@@ -131,7 +133,7 @@ def addAzaanTime (strPrayerName, strPrayerTime, objCronTab, strCommand):
 def addFriday(strSurahName, objCronTab, strCommand):
   job = objCronTab.new(command=strCommand,comment=strSurahName)
   job.minute.on(0)
-  job.hour.on(8)
+  job.hour.on(7)
   job.dow.on(5)
   job.set_comment(strJobComment)
   print(job)
@@ -166,12 +168,17 @@ utcOffset = -(time.timezone/float(3600))
 isDst = time.localtime().tm_isdst
 
 now = datetime.datetime.now()
-strPlayFajrAzaanMP3Command = f"omxplayer --vol {fajr_azaan_vol} -o local {root_dir}/media/Adhan-fajr.mp3 > /dev/null 2>&1"
-strPlayAzaanMP3Command = f"omxplayer --vol {default_azaan_vol} -o local {root_dir}/media/Adhan-Makkah1.mp3 > /dev/null 2>&1"
+# Check if VLC is installed
+if not system_cron.find_command('cvlc'):
+    print("VLC is not installed, please install VLC to play Adhan")
+    sys.exit(1)
+
+strPlayFajrAzaanMP3Command = f"cvlc --play-and-exit {root_dir}/media/Adhan-fajr.mp3 > /dev/null 2>&1"
+strPlayAzaanMP3Command = f"cvlc --play-and-exit {root_dir}/media/Adhan-Makkah1.mp3 > /dev/null 2>&1"
 strUpdateCommand = f"python3 {root_dir}/updateAzaanTimers.py >> {root_dir}/adhan.log 2>&1"
 strClearLogsCommand = f"truncate -s 0 {root_dir}/adhan.log 2>&1"
 strJobComment = "rpiAdhanClockJob"
-strSurahBaqarahMP3Command = f"omxplayer --vol {surahVolume} -o local {root_dir}/media/002-surah-baqarah-mishary.mp3 > /dev/null 2>&1"
+strSurahBaqarahMP3Command = f"cvlc {root_dir}/media/002-surah-baqarah-mishary.mp3 > /dev/null 2>&1"
 
 # Remove existing jobs created by this script
 system_cron.remove_all(comment=strJobComment)
@@ -214,6 +221,6 @@ addUpdateCronJob(system_cron, strUpdateCommand)
 # Clear the logs every month
 addClearLogsCronJob(system_cron,strClearLogsCommand)
 
-system_cron.write_to_user(user='pi')
+system_cron.write_to_user(user=getpass.getuser())
 print('Script execution finished at: ' + str(now))
 
