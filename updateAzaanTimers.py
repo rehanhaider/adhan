@@ -173,12 +173,16 @@ if not system_cron.find_command('cvlc'):
     print("VLC is not installed, please install VLC to play Adhan")
     sys.exit(1)
 
-strPlayFajrAzaanMP3Command = f"cvlc --play-and-exit {root_dir}/media/Adhan-fajr.mp3 > /dev/null 2>&1"
-strPlayAzaanMP3Command = f"cvlc --play-and-exit {root_dir}/media/Adhan-Makkah1.mp3 > /dev/null 2>&1"
+if not system_cron.find_command('paplay'):
+    print("Paplay is not installed, please install Paplay to play Adhan")
+    sys.exit(1)
+
+strPlayFajrAzaanMP3Command = f"XDG_RUNTIME_DIR=/run/user/1000 /usr/bin/cvlc {root_dir}/media/Adhan-fajr.mp3 > /dev/null 2>&1"
+strPlayAzaanMP3Command = f"XDG_RUNTIME_DIR=/run/user/1000 /usr/bin/cvlc {root_dir}/media/Adhan-Makkah1.mp3 > /dev/null 2>&1"
 strUpdateCommand = f"python3 {root_dir}/updateAzaanTimers.py >> {root_dir}/adhan.log 2>&1"
 strClearLogsCommand = f"truncate -s 0 {root_dir}/adhan.log 2>&1"
 strJobComment = "rpiAdhanClockJob"
-strSurahBaqarahMP3Command = f"cvlc {root_dir}/media/002-surah-baqarah-mishary.mp3 > /dev/null 2>&1"
+strSurahBaqarahMP3Command = f"XDG_RUNTIME_DIR=/run/user/1000 /usr/bin/cvlc {root_dir}/media/002-surah-baqarah-mishary.mp3 > /dev/null 2>&1"
 
 # Remove existing jobs created by this script
 system_cron.remove_all(comment=strJobComment)
