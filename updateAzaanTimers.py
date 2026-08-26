@@ -6,6 +6,7 @@ import sys
 from os.path import dirname, abspath, join as pathjoin
 import argparse
 import getpass
+import shutil
 from configparser import ConfigParser
 
 
@@ -69,8 +70,8 @@ def getConfig():
             config['DEFAULT']['method'] = method
         else:
             method = config['DEFAULT']['method']
-    except:
-        print("Incorrect value or values not provided")
+    except (KeyError, ValueError) as err:
+        print(f"Incorrect value or values not provided: {err}")
         lat = lon = method = None
 
 
@@ -85,7 +86,8 @@ def getConfig():
             fajr_azaan_vol = int(args.fajr_azaan_vol)
         else:
             fajr_azaan_vol = int(config['VOLUME']['fajrAzaanVolume'])
-    except:
+    except (KeyError, ValueError) as err:
+        print(f"Using default volumes, could not read configured ones: {err}")
         default_azaan_vol = 0
         fajr_azaan_vol = 0
 
@@ -98,16 +100,18 @@ def getConfig():
 
     # Setup Surah Baqarah on Fridays
     try:
-        surahBaqarah = bool(config['FRIDAY']['playSurahBaqarah'])
+        # getboolean, not bool(): bool() on the string "False" is True
+        surahBaqarah = config['FRIDAY'].getboolean('playSurahBaqarah', fallback=False)
         surahVolume = int(config['FRIDAY']['surahVolume'])
-    except:
+    except (KeyError, ValueError) as err:
+        print(f"Surah Baqarah not configured, disabling it: {err}")
         surahBaqarah = False
         surahVolume = 0
         config["FRIDAY"] = {"playSurahBaqarah": str(surahBaqarah), "surahVolume": str(surahVolume)}
     
 
     # If any of the mandatory values not provided or configures in settings.ini, exit and show usage
-    if not lat or not lon or not method:
+    if lat is None or lon is None or not method:
         print("No values provided, please provide values as per below usage")
         parser.print_usage()
         sys.exit(1)
@@ -120,11 +124,11 @@ def getConfig():
 
 
 def addAzaanTime (strPrayerName, strPrayerTime, objCronTab, strCommand):
-  job = objCronTab.new(command=strCommand,comment=strPrayerName)  
+  job = objCronTab.new(command=strCommand,comment=strPrayerName)
   timeArr = strPrayerTime.split(':')
   hour = timeArr[0]
-  min = timeArr[1]
-  job.minute.on(int(min))
+  minute = timeArr[1]
+  job.minute.on(int(minute))
   job.hour.on(int(hour))
   job.set_comment(strJobComment)
   print(job)
@@ -168,27 +172,40 @@ utcOffset = -(time.timezone/float(3600))
 isDst = time.localtime().tm_isdst
 
 now = datetime.datetime.now()
-# Check if VLC is installed
-if not system_cron.find_command('cvlc'):
-    print("VLC is not installed, please install VLC to play Adhan")
-    sys.exit(1)
+# Check the players we shell out to are actually on PATH. Note that
+# CronTab.find_command() cannot do this: it searches existing cron jobs, not
+# PATH, and returns a generator (always truthy), so it never reported anything.
+for required in ('cvlc', 'paplay'):
+    if not shutil.which(required):
+        print(f"{required} was not found on PATH, please install it to play Adhan")
+        sys.exit(1)
 
-if not system_cron.find_command('paplay'):
-    print("Paplay is not installed, please install Paplay to play Adhan")
-    sys.exit(1)
-
-strPlayFajrAzaanMP3Command = f"XDG_RUNTIME_DIR=/run/user/1000 /usr/bin/cvlc {root_dir}/media/Adhan-fajr.mp3 > /dev/null 2>&1"
-strPlayAzaanMP3Command = f"XDG_RUNTIME_DIR=/run/user/1000 /usr/bin/cvlc {root_dir}/media/Adhan-Makkah1.mp3 > /dev/null 2>&1"
-strUpdateCommand = f"python3 {root_dir}/updateAzaanTimers.py >> {root_dir}/adhan.log 2>&1"
+# Playback goes through playAzaan.sh, which applies the configured volume,
+# runs the before/after hooks and makes sure VLC actually exits afterwards.
+strPlayer = f"{root_dir}/playAzaan.sh"
+strLog = f">> {root_dir}/adhan.log 2>&1"
+strPlayFajrAzaanMP3Command = f"{strPlayer} {root_dir}/media/Adhan-fajr.mp3 {fajr_azaan_vol} {strLog}"
+strPlayAzaanMP3Command = f"{strPlayer} {root_dir}/media/Adhan-Makkah1.mp3 {default_azaan_vol} {strLog}"
+strSurahBaqarahMP3Command = f"{strPlayer} {root_dir}/media/002-surah-baqarah-mishary.mp3 {surahVolume} {strLog}"
+strUpdateCommand = f"python3 {root_dir}/updateAzaanTimers.py {strLog}"
 strClearLogsCommand = f"truncate -s 0 {root_dir}/adhan.log 2>&1"
 strJobComment = "rpiAdhanClockJob"
-strSurahBaqarahMP3Command = f"XDG_RUNTIME_DIR=/run/user/1000 /usr/bin/cvlc {root_dir}/media/002-surah-baqarah-mishary.mp3 > /dev/null 2>&1"
-
-# Remove existing jobs created by this script
-system_cron.remove_all(comment=strJobComment)
 
 # Calculate prayer times
 times = PT.getTimes((now.year,now.month,now.day), (lat, lon), utcOffset, isDst)
+
+# PrayTimes returns '-----' when a time cannot be calculated, which happens at
+# extreme latitudes. Bail out before rescheduling anything rather than crashing
+# part way through, so the crontab that is already installed keeps working.
+prayers = ('fajr', 'dhuhr', 'asr', 'maghrib', 'isha')
+invalid = [name for name in prayers if ':' not in times[name]]
+if invalid:
+    print(f"Could not calculate a time for: {', '.join(invalid)}")
+    print("Existing cron jobs have been left untouched.")
+    sys.exit(1)
+
+# Remove existing jobs created by this script
+system_cron.remove_all(comment=strJobComment)
 print("---------------------------------")
 print("Co-ordinates provided")
 print("---------------------------------")
