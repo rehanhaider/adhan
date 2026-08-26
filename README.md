@@ -7,6 +7,10 @@ This projects uses a python script which automatically calculates [adhan](https:
   2. Also, if you haven't worked with raspberry pi before, I would highly recommend using [these](https://www.raspberrypi.org/documentation/installation/noobs.md) instructions to get it up and running: https://www.raspberrypi.org/documentation/installation/noobs.md
 2. Speakers
 3. Auxiliary audio cable
+4. VLC and PulseAudio utils, which are used to play the adhan:
+  ```bash
+  sudo apt install vlc pulseaudio-utils
+  ```
 
 ## Caution when using Bluetooth Speakers
 1. Raspberry Pi's bluetooth drivers has known issues that result in intermittent disconnections. Using a wired speaker is recommended
@@ -89,12 +93,12 @@ Isha:    20:25 hrs
 ---------------------------------
 Crob jobs scheduled
 ---------------------------------
-8 4 * * * omxplayer --vol 0 -o local /home/pi/Desktop/Github/adhan/media/Adhan-fajr.mp3 > /dev/null 2>&1 # rpiAdhanClockJob
-16 12 * * * omxplayer --vol 0 -o local /home/pi/Desktop/Github/adhan/media/Adhan-Makkah1.mp3 > /dev/null 2>&1 # rpiAdhanClockJob
-50 15 * * * omxplayer --vol 0 -o local /home/pi/Desktop/Github/adhan/media/Adhan-Makkah1.mp3 > /dev/null 2>&1 # rpiAdhanClockJob
-59 18 * * * omxplayer --vol 0 -o local /home/pi/Desktop/Github/adhan/media/Adhan-Makkah1.mp3 > /dev/null 2>&1 # rpiAdhanClockJob
-25 20 * * * omxplayer --vol 0 -o local /home/pi/Desktop/Github/adhan/media/Adhan-Makkah1.mp3 > /dev/null 2>&1 # rpiAdhanClockJob
-0 8 * * 5 omxplayer --vol 0 -o local /home/pi/Desktop/Github/adhan/media/002-surah-baqarah-mishary.mp3 > /dev/null 2>&1 # Surah Baqarah
+8 4 * * * /home/pi/adhan/playAzaan.sh /home/pi/adhan/media/Adhan-fajr.mp3 0 >> /home/pi/adhan/adhan.log 2>&1 # rpiAdhanClockJob
+16 12 * * * /home/pi/adhan/playAzaan.sh /home/pi/adhan/media/Adhan-Makkah1.mp3 0 >> /home/pi/adhan/adhan.log 2>&1 # rpiAdhanClockJob
+50 15 * * * /home/pi/adhan/playAzaan.sh /home/pi/adhan/media/Adhan-Makkah1.mp3 0 >> /home/pi/adhan/adhan.log 2>&1 # rpiAdhanClockJob
+59 18 * * * /home/pi/adhan/playAzaan.sh /home/pi/adhan/media/Adhan-Makkah1.mp3 0 >> /home/pi/adhan/adhan.log 2>&1 # rpiAdhanClockJob
+25 20 * * * /home/pi/adhan/playAzaan.sh /home/pi/adhan/media/Adhan-Makkah1.mp3 0 >> /home/pi/adhan/adhan.log 2>&1 # rpiAdhanClockJob
+0 8 * * 5 /home/pi/adhan/playAzaan.sh /home/pi/adhan/media/002-surah-baqarah-mishary.mp3 0 >> /home/pi/adhan/adhan.log 2>&1 # rpiAdhanClockJob
 ---------------------------------
 
 ```
@@ -117,8 +121,34 @@ VOILA! You're done!! Plug in your speakers and enjoy!
 Please see the [manual](http://praytimes.org/manual) for advanced configuration instructions. 
 
 There are 2 additional arguments that are optional, you can set them in the first run or
-further runs: `--fajr-azaan-volume` and `azaan-volume`. You can control the volume of the Azaan
-by supplying numbers in millibels. To get more information on how to select the values, run the command with `-h`.
+further runs: `--fajr-azaan-volume` and `--azaan-volume`. You can control the volume of the Azaan
+by supplying numbers in millibels, where `0` is the file's nominal volume, `1500` is loud and
+`-30000` is effectively silent. To get more information on how to select the values, run the
+command with `-h`.
+
+The values are stored in the `[VOLUME]` section of `settings.ini`, and the Friday Surah Baqarah
+volume is set separately under `[FRIDAY] surahvolume`:
+
+```
+[VOLUME]
+defaultazaanvolume = 0
+fajrazaanvolume = -500
+```
+
+`playAzaan.sh` converts millibels to the linear gain VLC expects, so the same numbers keep
+working as they did under omxplayer.
+
+## How playback works
+
+Cron does not call VLC directly. Each scheduled job runs `playAzaan.sh`, which:
+1. Runs every executable script in `before-hooks.d/`
+2. Plays the audio with `cvlc --play-and-exit`, applying the configured volume
+3. Runs every executable script in `after-hooks.d/`
+
+You can play any file by hand the same way the scheduler does:
+```bash
+$ ./playAzaan.sh media/Adhan-Makkah1.mp3 0
+```
 
 ## Configuring custom actions before/after adhan
 
