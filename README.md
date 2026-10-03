@@ -7,9 +7,10 @@ This projects uses a python script which automatically calculates [adhan](https:
   2. Also, if you haven't worked with raspberry pi before, I would highly recommend using [these](https://www.raspberrypi.org/documentation/installation/noobs.md) instructions to get it up and running: https://www.raspberrypi.org/documentation/installation/noobs.md
 2. Speakers
 3. Auxiliary audio cable
-4. VLC and PulseAudio utils, which are used to play the adhan:
+4. A player for the adhan. Install only the one you will use (see [Choosing the player](#choosing-the-player)):
   ```bash
-  sudo apt install vlc pulseaudio-utils
+  sudo apt install vlc               # player = vlc (the default)
+  sudo apt install pulseaudio-utils  # player = paplay
   ```
 
 ## Caution when using Bluetooth Speakers
@@ -93,12 +94,12 @@ Isha:    20:25 hrs
 ---------------------------------
 Crob jobs scheduled
 ---------------------------------
-8 4 * * * /home/pi/adhan/playAzaan.sh /home/pi/adhan/media/Adhan-fajr.mp3 0 >> /home/pi/adhan/adhan.log 2>&1 # rpiAdhanClockJob
-16 12 * * * /home/pi/adhan/playAzaan.sh /home/pi/adhan/media/Adhan-Makkah1.mp3 0 >> /home/pi/adhan/adhan.log 2>&1 # rpiAdhanClockJob
-50 15 * * * /home/pi/adhan/playAzaan.sh /home/pi/adhan/media/Adhan-Makkah1.mp3 0 >> /home/pi/adhan/adhan.log 2>&1 # rpiAdhanClockJob
-59 18 * * * /home/pi/adhan/playAzaan.sh /home/pi/adhan/media/Adhan-Makkah1.mp3 0 >> /home/pi/adhan/adhan.log 2>&1 # rpiAdhanClockJob
-25 20 * * * /home/pi/adhan/playAzaan.sh /home/pi/adhan/media/Adhan-Makkah1.mp3 0 >> /home/pi/adhan/adhan.log 2>&1 # rpiAdhanClockJob
-0 8 * * 5 /home/pi/adhan/playAzaan.sh /home/pi/adhan/media/002-surah-baqarah-mishary.mp3 0 >> /home/pi/adhan/adhan.log 2>&1 # rpiAdhanClockJob
+8 4 * * * /home/pi/adhan/playAzaan.sh /home/pi/adhan/media/Adhan-fajr.mp3 0 vlc >> /home/pi/adhan/adhan.log 2>&1 # rpiAdhanClockJob
+16 12 * * * /home/pi/adhan/playAzaan.sh /home/pi/adhan/media/Adhan-Makkah1.mp3 0 vlc >> /home/pi/adhan/adhan.log 2>&1 # rpiAdhanClockJob
+50 15 * * * /home/pi/adhan/playAzaan.sh /home/pi/adhan/media/Adhan-Makkah1.mp3 0 vlc >> /home/pi/adhan/adhan.log 2>&1 # rpiAdhanClockJob
+59 18 * * * /home/pi/adhan/playAzaan.sh /home/pi/adhan/media/Adhan-Makkah1.mp3 0 vlc >> /home/pi/adhan/adhan.log 2>&1 # rpiAdhanClockJob
+25 20 * * * /home/pi/adhan/playAzaan.sh /home/pi/adhan/media/Adhan-Makkah1.mp3 0 vlc >> /home/pi/adhan/adhan.log 2>&1 # rpiAdhanClockJob
+0 8 * * 5 /home/pi/adhan/playAzaan.sh /home/pi/adhan/media/002-surah-baqarah-mishary.mp3 0 vlc >> /home/pi/adhan/adhan.log 2>&1 # rpiAdhanClockJob
 ---------------------------------
 
 ```
@@ -135,19 +136,38 @@ defaultazaanvolume = 0
 fajrazaanvolume = -500
 ```
 
-`playAzaan.sh` converts millibels to the linear gain VLC expects, so the same numbers keep
-working as they did under omxplayer.
+`playAzaan.sh` converts millibels to the volume scale of the selected player, so the same
+numbers keep working as they did under omxplayer.
+
+## Choosing the player
+
+The adhan can play through VLC (`cvlc`) or PulseAudio's `paplay`. VLC is the default. To
+change the player, give `--player` once, or edit the `[PLAYER]` section of `settings.ini`:
+
+```bash
+$ python3 /home/pi/adhan/updateAzaanTimers.py --player paplay
+```
+
+```
+[PLAYER]
+player = paplay
+```
+
+Only the selected player has to be installed. Every night, `updateAzaanTimers.py` checks
+that the selected player is on `PATH`. If it is not, the script stops and writes the
+reason to `adhan.log`. It does not switch to the other player. `paplay` also needs
+`libsndfile` 1.1 or newer to read MP3 files. The script checks this too.
 
 ## How playback works
 
 Cron does not call VLC directly. Each scheduled job runs `playAzaan.sh`, which:
 1. Runs every executable script in `before-hooks.d/`
-2. Plays the audio with `cvlc --play-and-exit`, applying the configured volume
+2. Plays the audio with the selected player (`cvlc --play-and-exit` or `paplay`), applying the configured volume
 3. Runs every executable script in `after-hooks.d/`
 
 You can play any file by hand the same way the scheduler does:
 ```bash
-$ ./playAzaan.sh media/Adhan-Makkah1.mp3 0
+$ ./playAzaan.sh media/Adhan-Makkah1.mp3 0 vlc
 ```
 
 ## Configuring custom actions before/after adhan

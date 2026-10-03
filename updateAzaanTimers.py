@@ -7,6 +7,7 @@ from os.path import dirname, abspath, join as pathjoin
 import argparse
 import getpass
 import shutil
+import subprocess
 from configparser import ConfigParser
 
 
@@ -17,6 +18,11 @@ PT = PrayTimes()
 
 from crontab import CronTab
 system_cron = CronTab(user=getpass.getuser())
+
+# Players that playAzaan.sh knows how to drive, mapped to the command each one
+# needs on PATH. Add a player here and a matching case in playAzaan.sh.
+SUPPORTED_PLAYERS = {'vlc': 'cvlc', 'paplay': 'paplay'}
+DEFAULT_PLAYER = 'vlc'
 
 
 # HELPER FUNCTIONS
@@ -36,6 +42,8 @@ def parseArgs():
                         help='Volume for azaan (other than fajr) in millibels, 1500 is loud and -30000 is quiet (default 0)')
     parser.add_argument('--fajr-azaan-volume', type=int, dest='fajr_azaan_vol',
                         help='Volume for fajr azaan in millibels, 1500 is loud and -30000 is quiet (default 0)')
+    parser.add_argument('--player', choices=sorted(SUPPORTED_PLAYERS), dest='player',
+                        help=f'Program used to play the adhan (default {DEFAULT_PLAYER})')
     return parser
 
 def getConfig():
@@ -49,7 +57,7 @@ def getConfig():
     file_path = pathjoin(root_dir, 'settings.ini')
     config.read(file_path)
 
-    lat = lon = method = fajr_azaan_vol = default_azaan_vol = surahBaqarah = surahVolume = None
+    lat = lon = method = fajr_azaan_vol = default_azaan_vol = surahBaqarah = surahVolume = player = None
 
     # Get mandatory data. First check args, if not present check settings.ini
     try:
@@ -110,6 +118,22 @@ def getConfig():
         config["FRIDAY"] = {"playSurahBaqarah": str(surahBaqarah), "surahVolume": str(surahVolume)}
     
 
+    # Player used by playAzaan.sh. A value edited by hand in settings.ini is not
+    # covered by argparse's choices, so validate it here too.
+    if args.player:
+        player = args.player
+    else:
+        player = config.get('PLAYER', 'player', fallback=DEFAULT_PLAYER).strip().lower()
+    if player not in SUPPORTED_PLAYERS:
+        print(f"Unsupported player '{player}' in settings.ini, "
+              f"use one of: {', '.join(sorted(SUPPORTED_PLAYERS))}")
+        sys.exit(1)
+    # Check the player is usable before it is saved, so a failed --player
+    # change does not leave every nightly update failing on the same value
+    checkPlayer(player)
+    config["PLAYER"] = {"player": player}
+
+
     # If any of the mandatory values not provided or configures in settings.ini, exit and show usage
     if lat is None or lon is None or not method:
         print("No values provided, please provide values as per below usage")
@@ -120,7 +144,27 @@ def getConfig():
     with open(file_path, 'w') as configfile:
         config.write(configfile)
 
-    return lat, lon, method, fajr_azaan_vol, default_azaan_vol, surahBaqarah, surahVolume
+    return lat, lon, method, fajr_azaan_vol, default_azaan_vol, surahBaqarah, surahVolume, player
+
+
+def checkPlayer(player):
+  # Note that CronTab.find_command() cannot do this: it searches existing cron
+  # jobs, not PATH, and returns a generator (always truthy).
+  # Fail loudly rather than fall back to another player: the configured player
+  # is the one that will run at prayer time, so it is the one that must work.
+  command = SUPPORTED_PLAYERS[player]
+  if not shutil.which(command):
+    print(f"Player '{player}' is selected but {command} was not found on PATH, "
+          f"please install it or choose another player with --player")
+    sys.exit(1)
+  if player == 'paplay':
+    # paplay reads files through libsndfile, which only supports MP3 from 1.1
+    formats = subprocess.run([command, '--list-file-formats'],
+                             capture_output=True, text=True).stdout
+    if not any(line.split('\t')[0] == 'm1a' for line in formats.splitlines()):
+      print("paplay cannot play MP3 files on this system (libsndfile 1.1 or newer "
+            "is needed), please upgrade it or use --player vlc")
+      sys.exit(1)
 
 
 def addAzaanTime (strPrayerName, strPrayerTime, objCronTab, strCommand):
@@ -163,7 +207,7 @@ def addClearLogsCronJob (objCronTab, strCommand):
 # ---------------------------------
 # HELPER FUNCTIONS END
 # Merge args with saved values if any
-lat, lon, method, fajr_azaan_vol, default_azaan_vol, surahBaqarah, surahVolume = getConfig()
+lat, lon, method, fajr_azaan_vol, default_azaan_vol, surahBaqarah, surahVolume, player = getConfig()
 # Set calculation method, utcOffset and dst here
 # By default system timezone will be used
 # --------------------
@@ -172,21 +216,13 @@ utcOffset = -(time.timezone/float(3600))
 isDst = time.localtime().tm_isdst
 
 now = datetime.datetime.now()
-# Check the players we shell out to are actually on PATH. Note that
-# CronTab.find_command() cannot do this: it searches existing cron jobs, not
-# PATH, and returns a generator (always truthy), so it never reported anything.
-for required in ('cvlc', 'paplay'):
-    if not shutil.which(required):
-        print(f"{required} was not found on PATH, please install it to play Adhan")
-        sys.exit(1)
-
 # Playback goes through playAzaan.sh, which applies the configured volume,
-# runs the before/after hooks and makes sure VLC actually exits afterwards.
+# runs the before/after hooks and plays the file with the configured player.
 strPlayer = f"{root_dir}/playAzaan.sh"
 strLog = f">> {root_dir}/adhan.log 2>&1"
-strPlayFajrAzaanMP3Command = f"{strPlayer} {root_dir}/media/Adhan-fajr.mp3 {fajr_azaan_vol} {strLog}"
-strPlayAzaanMP3Command = f"{strPlayer} {root_dir}/media/Adhan-Makkah1.mp3 {default_azaan_vol} {strLog}"
-strSurahBaqarahMP3Command = f"{strPlayer} {root_dir}/media/002-surah-baqarah-mishary.mp3 {surahVolume} {strLog}"
+strPlayFajrAzaanMP3Command = f"{strPlayer} {root_dir}/media/Adhan-fajr.mp3 {fajr_azaan_vol} {player} {strLog}"
+strPlayAzaanMP3Command = f"{strPlayer} {root_dir}/media/Adhan-Makkah1.mp3 {default_azaan_vol} {player} {strLog}"
+strSurahBaqarahMP3Command = f"{strPlayer} {root_dir}/media/002-surah-baqarah-mishary.mp3 {surahVolume} {player} {strLog}"
 strUpdateCommand = f"python3 {root_dir}/updateAzaanTimers.py {strLog}"
 strClearLogsCommand = f"truncate -s 0 {root_dir}/adhan.log 2>&1"
 strJobComment = "rpiAdhanClockJob"
@@ -209,7 +245,7 @@ system_cron.remove_all(comment=strJobComment)
 print("---------------------------------")
 print("Co-ordinates provided")
 print("---------------------------------")
-print(f"Latitude:   {lat} \nLongitude:  {lon} \nMethod:     {method}")
+print(f"Latitude:   {lat} \nLongitude:  {lon} \nMethod:     {method} \nPlayer:     {player}")
 print("---------------------------------")
 print()
 print("---------------------------------")
