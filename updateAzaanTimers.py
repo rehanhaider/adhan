@@ -128,6 +128,9 @@ def getConfig():
         print(f"Unsupported player '{player}' in settings.ini, "
               f"use one of: {', '.join(sorted(SUPPORTED_PLAYERS))}")
         sys.exit(1)
+    # Check the player is usable before it is saved, so a failed --player
+    # change does not leave every nightly update failing on the same value
+    checkPlayer(player)
     config["PLAYER"] = {"player": player}
 
 
@@ -145,6 +148,8 @@ def getConfig():
 
 
 def checkPlayer(player):
+  # Note that CronTab.find_command() cannot do this: it searches existing cron
+  # jobs, not PATH, and returns a generator (always truthy).
   # Fail loudly rather than fall back to another player: the configured player
   # is the one that will run at prayer time, so it is the one that must work.
   command = SUPPORTED_PLAYERS[player]
@@ -211,11 +216,6 @@ utcOffset = -(time.timezone/float(3600))
 isDst = time.localtime().tm_isdst
 
 now = datetime.datetime.now()
-# Check the configured player is actually usable. Note that
-# CronTab.find_command() cannot do this: it searches existing cron jobs, not
-# PATH, and returns a generator (always truthy), so it never reported anything.
-checkPlayer(player)
-
 # Playback goes through playAzaan.sh, which applies the configured volume,
 # runs the before/after hooks and plays the file with the configured player.
 strPlayer = f"{root_dir}/playAzaan.sh"

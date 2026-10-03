@@ -94,12 +94,12 @@ Isha:    20:25 hrs
 ---------------------------------
 Crob jobs scheduled
 ---------------------------------
-8 4 * * * /home/pi/adhan/playAzaan.sh /home/pi/adhan/media/Adhan-fajr.mp3 0 >> /home/pi/adhan/adhan.log 2>&1 # rpiAdhanClockJob
-16 12 * * * /home/pi/adhan/playAzaan.sh /home/pi/adhan/media/Adhan-Makkah1.mp3 0 >> /home/pi/adhan/adhan.log 2>&1 # rpiAdhanClockJob
-50 15 * * * /home/pi/adhan/playAzaan.sh /home/pi/adhan/media/Adhan-Makkah1.mp3 0 >> /home/pi/adhan/adhan.log 2>&1 # rpiAdhanClockJob
-59 18 * * * /home/pi/adhan/playAzaan.sh /home/pi/adhan/media/Adhan-Makkah1.mp3 0 >> /home/pi/adhan/adhan.log 2>&1 # rpiAdhanClockJob
-25 20 * * * /home/pi/adhan/playAzaan.sh /home/pi/adhan/media/Adhan-Makkah1.mp3 0 >> /home/pi/adhan/adhan.log 2>&1 # rpiAdhanClockJob
-0 8 * * 5 /home/pi/adhan/playAzaan.sh /home/pi/adhan/media/002-surah-baqarah-mishary.mp3 0 >> /home/pi/adhan/adhan.log 2>&1 # rpiAdhanClockJob
+8 4 * * * /home/pi/adhan/playAzaan.sh /home/pi/adhan/media/Adhan-fajr.mp3 0 vlc >> /home/pi/adhan/adhan.log 2>&1 # rpiAdhanClockJob
+16 12 * * * /home/pi/adhan/playAzaan.sh /home/pi/adhan/media/Adhan-Makkah1.mp3 0 vlc >> /home/pi/adhan/adhan.log 2>&1 # rpiAdhanClockJob
+50 15 * * * /home/pi/adhan/playAzaan.sh /home/pi/adhan/media/Adhan-Makkah1.mp3 0 vlc >> /home/pi/adhan/adhan.log 2>&1 # rpiAdhanClockJob
+59 18 * * * /home/pi/adhan/playAzaan.sh /home/pi/adhan/media/Adhan-Makkah1.mp3 0 vlc >> /home/pi/adhan/adhan.log 2>&1 # rpiAdhanClockJob
+25 20 * * * /home/pi/adhan/playAzaan.sh /home/pi/adhan/media/Adhan-Makkah1.mp3 0 vlc >> /home/pi/adhan/adhan.log 2>&1 # rpiAdhanClockJob
+0 8 * * 5 /home/pi/adhan/playAzaan.sh /home/pi/adhan/media/002-surah-baqarah-mishary.mp3 0 vlc >> /home/pi/adhan/adhan.log 2>&1 # rpiAdhanClockJob
 ---------------------------------
 
 ```
