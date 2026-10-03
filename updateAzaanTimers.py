@@ -61,13 +61,13 @@ def getConfig():
 
     # Get mandatory data. First check args, if not present check settings.ini
     try:
-        if args.lat:
+        if args.lat is not None:
             lat = float(args.lat)
             config['DEFAULT']['lat'] = str(lat)
         else:
             lat = float(config['DEFAULT']['lat'])
         
-        if args.lon:
+        if args.lon is not None:
             lon = float(args.lon)
             config['DEFAULT']['lon'] = str(lon)
         else:
@@ -85,12 +85,12 @@ def getConfig():
 
     # Get optional data
     try:
-        if args.default_azaan_vol:
+        if args.default_azaan_vol is not None:
             default_azaan_vol = int(args.default_azaan_vol)
         else:
             default_azaan_vol = int(config['VOLUME']['defaultAzaanVolume'])
 
-        if args.fajr_azaan_vol:
+        if args.fajr_azaan_vol is not None:
             fajr_azaan_vol = int(args.fajr_azaan_vol)
         else:
             fajr_azaan_vol = int(config['VOLUME']['fajrAzaanVolume'])
