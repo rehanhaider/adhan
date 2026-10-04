@@ -59,17 +59,23 @@ class PlayAzaanTest(unittest.TestCase):
         # 10 ** (millibels / 2000), with 4 decimals
         for volume, gain in (('0', '1.0000'), ('1500', '5.6234')):
             with self.subTest(volume=volume):
+                if os.path.exists(self.events):
+                    os.remove(self.events)
                 result = self.run_play(self.audio, volume, 'vlc')
                 self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+                self.assertEqual(self.events_seen(), ['cvlc'])
                 with open(args_log) as fh:
                     self.assertEqual(fh.read().split('\n')[:-1],
                                      ['--play-and-exit', '--gain', gain,
                                       self.audio, 'vlc://quit'])
 
     def test_exit_code_is_the_exit_code_of_the_player(self):
-        """C6: a failure of the player shows in the exit code."""
+        """C6: a failure of the player shows in the exit code, after the
+        after-hooks ran."""
         self.fakeCvlc(exit_code=3)
+        self.hook('after-hooks.d', '10-after', f'echo after >> {self.events}')
         self.assertEqual(self.run_play(self.audio, '0', 'vlc').returncode, 3)
+        self.assertEqual(self.events_seen(), ['cvlc', 'after'])
 
     def test_hooks_run_before_and_after_the_player(self):
         """C6: a hook that fails does not stop the adhan, a hook that is not

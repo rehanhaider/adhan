@@ -24,7 +24,8 @@ FIRST_RUN = ('--lat', '12.8369', '--lon', '77.4089', '--method', 'Karachi',
              '--azaan-volume', '500')
 
 
-class MainTest(unittest.TestCase):
+class FakesTestCase(unittest.TestCase):
+    """Helpers to run main() with fakes. It has no tests of its own."""
 
     def setUp(self):
         fakes.guardRealSettings(self)
@@ -57,6 +58,9 @@ class MainTest(unittest.TestCase):
     def writeSettings(self, data):
         with open(self.settings_path, 'wb') as fh:
             fh.write(data)
+
+
+class MainTest(FakesTestCase):
 
     def test_first_run_then_nightly_run_give_the_same_schedule(self):
         """C5: values saved on the first run give the same nightly schedule."""
@@ -102,20 +106,6 @@ class MainTest(unittest.TestCase):
                 self.assertEqual(cron.render(), crontab)
                 self.assertEqual(self.settings(), text.encode())
 
-    # Bug: settings.ini is saved before the times are calculated.
-    # https://github.com/rehanhaider/adhan/issues/31
-    @unittest.expectedFailure
-    def test_time_that_cannot_be_calculated_changes_nothing(self):
-        """C4: a '-----' time is an error, and the crontab and settings.ini stay."""
-        cron = CronTab(tab=USER_JOB + '\n')
-        self.assertEqual(self.runMain(*FIRST_RUN, cron=cron), 0)
-        settings, crontab = self.settings(), cron.render()
-        # In polar night at latitude 80 PrayTimes cannot calculate Maghrib
-        self.assertNotEqual(self.runMain('--lat', '80', '--lon', '15', '--method', 'MWL',
-                                         cron=cron), 0)
-        self.assertEqual(cron.render(), crontab)
-        self.assertEqual(self.settings(), settings)
-
     def test_player_not_on_path_saves_nothing(self):
         """C4: if the player is not installed, exit and save nothing (#20)."""
         self.setPath(self.empty_bin)
@@ -123,6 +113,36 @@ class MainTest(unittest.TestCase):
         self.assertNotEqual(self.runMain(*FIRST_RUN, cron=cron), 0)
         self.assertEqual(cron.render(), USER_JOB + '\n')
         self.assertIsNone(self.settings())
+
+
+class TimeThatCannotBeCalculatedTest(FakesTestCase):
+    """C4: a '-----' time is an error, and the crontab and settings.ini stay.
+
+    setUp does a good first run, then a run at latitude 80 in polar night,
+    where PrayTimes cannot calculate Maghrib. An error in setUp is reported
+    as an error, not as the expected failure below.
+    """
+
+    def setUp(self):
+        super().setUp()
+        self.cron = CronTab(tab=USER_JOB + '\n')
+        self.assertEqual(self.runMain(*FIRST_RUN, cron=self.cron), 0)
+        self.settings_before = self.settings()
+        self.crontab_before = self.cron.render()
+        self.exit_code = self.runMain('--lat', '80', '--lon', '15', '--method', 'MWL',
+                                      cron=self.cron)
+
+    def test_exits_with_an_error_and_keeps_the_crontab(self):
+        """C4: the run fails, and yesterday's jobs stay."""
+        self.assertNotEqual(self.exit_code, 0)
+        self.assertEqual(self.cron.render(), self.crontab_before)
+
+    # Bug: settings.ini is saved before the times are calculated.
+    # https://github.com/rehanhaider/adhan/issues/31
+    @unittest.expectedFailure
+    def test_keeps_settings_ini(self):
+        """C4: the run does not save the location it could not use."""
+        self.assertEqual(self.settings(), self.settings_before)
 
 
 if __name__ == '__main__':
