@@ -111,6 +111,13 @@ class MainTest(FakesTestCase):
             line.replace('Adhan-Makkah1.mp3', 'Adhan-Madinah.mp3') if line.startswith('28 19 ')
             else line for line in first.render().splitlines(keepends=True)))
         self.assertIn(b'isha = Adhan-Madinah.mp3', self.settings())
+        # Hanafi in settings.ini moves Asr only, and the log shows it (#11)
+        self.writeSettings(self.settings().replace(b'asr = Standard', b'asr = hanafi'))
+        hanafi = CronTab(tab='')
+        self.assertEqual(self.runMain(cron=hanafi), 0)
+        self.assertEqual(hanafi.render(), audio.render().replace('47 15 * * * ', '37 16 * * * '))
+        self.assertIn('Asr school: Hanafi', self.output.getvalue())
+        self.assertIn(b'asr = Hanafi', self.settings())
 
     def test_second_run_replaces_our_jobs_and_keeps_the_users(self):
         """C3: a second run does not add jobs, and other jobs stay. The old
@@ -153,6 +160,9 @@ class MainTest(FakesTestCase):
              good.replace('\nfajr = true\n', '\nfajr = maybe\n')),
             ('on or off of an unknown prayer (#13)', (),
              good.replace('\nfajr = true\n', '\nfjar = false\n')),
+            ('unknown asr Maliki (#11)', (),
+             good.replace('asr = Standard', 'asr = Maliki')),
+            ('unknown asr on the command line (#11)', ('--asr', 'Maliki'), good),
             ('audio file not in media/ (#10)', (),
              good.replace('fajr = Adhan-fajr.mp3', 'fajr = Adhan-fjar.mp3')),
             ('audio file not in media/, on the command line (#10)',

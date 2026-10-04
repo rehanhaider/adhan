@@ -26,6 +26,7 @@ FIRST_RUN_SETTINGS = '''[DEFAULT]
 lat = 12.8369
 lon = 77.4089
 method = Karachi
+asr = Standard
 
 [VOLUME]
 defaultazaanvolume = 500
