@@ -40,10 +40,12 @@ TIMES = {'fajr': '05:31', 'dhuhr': '12:30', 'asr': '15:47',
          'maghrib': '18:13', 'isha': '19:28'}
 ROOT = '/opt/adhan'
 NO_OFFSETS = dict.fromkeys(PRAYERS, 0)
+ALL_ON = dict.fromkeys(PRAYERS, True)
 SETTINGS = app.Settings(lat=12.8369, lon=77.4089, method='Karachi',
                         default_azaan_vol=500, fajr_azaan_vol=-500,
                         surah_baqarah=False, surah_volume=300,
-                        player='paplay', offsets=NO_OFFSETS, warnings=[])
+                        player='paplay', offsets=NO_OFFSETS, enabled=ALL_ON,
+                        warnings=[])
 
 STORED = '''[DEFAULT]
 lat = 10
@@ -145,6 +147,23 @@ class BuildJobsTest(unittest.TestCase):
                 jobs = app.buildJobs(TIMES, settings, ROOT)
                 self.assertCountEqual(jobs, expected + [UPDATE_JOB, REBOOT_JOB])
 
+    def test_a_prayer_that_is_off_has_no_job(self):
+        """C2: a prayer that is off has no job, the others keep theirs (#13).
+        With all five off, the jobs that renew the schedule stay."""
+        settings = SETTINGS._replace(enabled=dict(ALL_ON, fajr=False, isha=False))
+        jobs = app.buildJobs(TIMES, settings, ROOT)
+        self.assertCountEqual(jobs, [
+            app.Job(12, 30, None, None, play('Adhan-Makkah1.mp3', 500)),
+            app.Job(15, 47, None, None, play('Adhan-Makkah1.mp3', 500)),
+            app.Job(18, 13, None, None, play('Adhan-Makkah1.mp3', 500)),
+            UPDATE_JOB, REBOOT_JOB])
+        settings = SETTINGS._replace(enabled=dict.fromkeys(PRAYERS, False),
+                                     surah_baqarah=True)
+        jobs = app.buildJobs(TIMES, settings, ROOT)
+        self.assertCountEqual(jobs, [
+            app.Job(7, 0, None, 5, play('002-surah-baqarah-mishary.mp3', 300)),
+            UPDATE_JOB, REBOOT_JOB])
+
     def test_edge_times_give_the_right_hour_and_minute(self):
         """C2: 00:05 and 23:59 become the right cron hour and minute."""
         times = dict(TIMES, fajr='00:05', isha='23:59')
@@ -233,6 +252,21 @@ class ResolveSettingsTest(unittest.TestCase):
              dict(offsets=dict(NO_OFFSETS, fajr=3))),
             ('the default offsets are 0 (#12)', (), only_location,
              dict(offsets=NO_OFFSETS)),
+            ('the stored prayers that are on or off are used (#13)', (),
+             STORED + '[ENABLED]\nfajr = false\nAsr = No\nisha = 1\n',
+             dict(enabled=dict(ALL_ON, fajr=False, asr=False))),
+            ('the command line turns a prayer on or off (#13)',
+             ('--no-play-dhuhr', '--play-fajr'),
+             STORED + '[ENABLED]\nfajr = false\nisha = false\n',
+             dict(enabled=dict(ALL_ON, dhuhr=False, isha=False))),
+            ('the command line replaces a bad stored value (#13)', ('--no-play-fajr',),
+             STORED + '[ENABLED]\nfajr = maybe\n',
+             dict(enabled=dict(ALL_ON, fajr=False))),
+            ('all prayers are on by default (#13)', (), only_location,
+             dict(enabled=ALL_ON)),
+            ('a prayer in [DEFAULT] is not on or off (#13)', (),
+             STORED.replace('[DEFAULT]\n', '[DEFAULT]\nfajr = false\n') + '[ENABLED]\n',
+             dict(enabled=ALL_ON)),
             ('a prayer in [DEFAULT] is not an offset (#12)', (),
              STORED.replace('[DEFAULT]\n', '[DEFAULT]\nfajr = 9\n') + '[OFFSETS]\nisha = 1\n',
              dict(offsets=dict(NO_OFFSETS, isha=1))),
@@ -260,6 +294,9 @@ class ResolveSettingsTest(unittest.TestCase):
             ('offset with no value (#12)', (), STORED + '[OFFSETS]\nasr =\n'),
             ('offset of an unknown prayer, a typo (#12)', (), STORED + '[OFFSETS]\nfjar = 5\n'),
             ('lat in [OFFSETS], also a key of [DEFAULT] (#12)', (), STORED + '[OFFSETS]\nlat = 5\n'),
+            ('on or off is maybe (#13)', (), STORED + '[ENABLED]\nfajr = maybe\n'),
+            ('on or off with no value (#13)', (), STORED + '[ENABLED]\nisha =\n'),
+            ('on or off of an unknown prayer, a typo (#13)', (), STORED + '[ENABLED]\nfjar = false\n'),
         ]
         for name, argv, text in cases:
             with self.subTest(name):

@@ -58,6 +58,7 @@ Settings = namedtuple('Settings', [
     'lat', 'lon', 'method', 'default_azaan_vol', 'fajr_azaan_vol',
     'surah_baqarah', 'surah_volume', 'player',
     'offsets',  # minutes to add to each prayer time, by prayer name
+    'enabled',  # True for each prayer that has a job, by prayer name
     'warnings'])  # messages for the user about values that fell back to a default
 
 # One cron job. A day or weekday of None means every day ('*'). A job with
@@ -84,6 +85,10 @@ def parseArgs():
     for name in PRAYERS:
         parser.add_argument(f'--{name}-offset', type=int, dest=f'{name}_offset', metavar='MINUTES',
                             help=f'Minutes to add to the {name} time, may be negative (default 0)')
+    for name in PRAYERS:
+        parser.add_argument(f'--play-{name}', action=argparse.BooleanOptionalAction,
+                            dest=f'{name}_enabled',
+                            help=f'Play the {name} adhan or not (default: play)')
     parser.add_argument('--wait-for-time-sync', action='store_true', dest='wait_for_time_sync',
                         help='Wait until the clock is synchronized before the update. '
                              'The update after a reboot uses this')
@@ -144,9 +149,10 @@ def resolveSettings(args, stored):
                           f"use one of: {', '.join(sorted(SUPPORTED_PLAYERS))}")
 
     offsets = readOffsets(args, stored)
+    enabled = readEnabled(args, stored)
 
     return Settings(lat, lon, method, default_azaan_vol, fajr_azaan_vol,
-                    surahBaqarah, surahVolume, player, offsets, warnings)
+                    surahBaqarah, surahVolume, player, offsets, enabled, warnings)
 
 
 def checkCoordinate(name, value, limit):
@@ -182,18 +188,24 @@ def checkMethod(method):
   return name
 
 
+def prayerSection(config, name):
+  # The keys written in a section that has one key for each prayer, such as
+  # [OFFSETS]. Stop on an unknown name: a typo must not lose a value.
+  # config[name] also has the keys of [DEFAULT] (lat, lon, method), and
+  # ConfigParser has no public way to leave them out.
+  section = config._sections.get(name, {})
+  unknown = [key for key in section if key not in PRAYERS]
+  if unknown:
+    raise ConfigError(f"Unknown prayer '{unknown[0]}' in [{name}] in settings.ini, "
+                      f"use: {', '.join(PRAYERS)}")
+  return section
+
+
 def readOffsets(args, config):
   # The minutes to add to each prayer time (#12), from the command line, then
   # [OFFSETS] in settings.ini, then 0. Stop on a value that is not a whole
-  # number, and on an unknown name: a typo must not lose an offset.
-  # Read only the keys written in [OFFSETS]: config['OFFSETS'] also has the
-  # keys of [DEFAULT] (lat, lon, method), and ConfigParser has no public way
-  # to leave them out.
-  section = config._sections.get('OFFSETS', {})
-  unknown = [key for key in section if key not in PRAYERS]
-  if unknown:
-    raise ConfigError(f"Unknown prayer '{unknown[0]}' in [OFFSETS] in settings.ini, "
-                      f"use: {', '.join(PRAYERS)}")
+  # number.
+  section = prayerSection(config, 'OFFSETS')
   offsets = {}
   for name in PRAYERS:
     if getattr(args, f'{name}_offset') is not None:
@@ -206,6 +218,24 @@ def readOffsets(args, config):
       raise ConfigError(f"Invalid offset '{value}' for {name} in settings.ini, "
                         f"use a whole number of minutes, for example 5 or -3") from None
   return offsets
+
+
+def readEnabled(args, config):
+  # True for each prayer that has a job (#13), from the command line, then
+  # [ENABLED] in settings.ini, then True. Accept the values of getboolean()
+  # (true, false, yes, no, on, off, 1, 0) and stop on any other value.
+  section = prayerSection(config, 'ENABLED')
+  enabled = {}
+  for name in PRAYERS:
+    if getattr(args, f'{name}_enabled') is not None:
+      enabled[name] = getattr(args, f'{name}_enabled')
+      continue
+    value = section.get(name, 'true')
+    if value.lower() not in ConfigParser.BOOLEAN_STATES:
+      raise ConfigError(f"Invalid value '{value}' for {name} in [ENABLED] in settings.ini, "
+                        f"use true or false")
+    enabled[name] = ConfigParser.BOOLEAN_STATES[value.lower()]
+  return enabled
 
 
 def readFriday(config):
@@ -250,6 +280,8 @@ def buildJobs(times, settings, root_dir):
 
     jobs = []
     for name in PRAYERS:
+        if not settings.enabled[name]:
+            continue
         hour, minute = times[name].split(':')
         if name == 'fajr':
             command = play('Adhan-fajr.mp3', settings.fajr_azaan_vol)
@@ -348,6 +380,7 @@ def saveSettings(config, args, settings, file_path):
                             "surahVolume": str(settings.surah_volume)}
     config["PLAYER"] = {"player": settings.player}
     config["OFFSETS"] = {name: str(settings.offsets[name]) for name in PRAYERS}
+    config["ENABLED"] = {name: str(settings.enabled[name]).lower() for name in PRAYERS}
 
     with open(file_path, 'w') as configfile:
         config.write(configfile)
@@ -506,10 +539,16 @@ def main(argv=None, settings_path=None, cron=None, today=None, utcOffset=None,
     log("Prayer Times")
     log("---------------------------------")
     for name in PRAYERS:
-        offset = settings.offsets[name]
-        note = f" (offset {offset:+d} minutes)" if offset else ""
+        notes = []
+        if settings.offsets[name]:
+            notes.append(f"offset {settings.offsets[name]:+d} minutes")
+        if not settings.enabled[name]:
+            notes.append("not scheduled")
+        note = f" ({', '.join(notes)})" if notes else ""
         log(f"{name.capitalize() + ':':<9}{times[name]} hrs{note}")
     log("---------------------------------")
+    if not any(settings.enabled.values()):
+        log("All five prayers are off in [ENABLED] in settings.ini, so no adhan is scheduled.")
 
     # Add times to crontab
     log()
