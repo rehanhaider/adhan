@@ -25,6 +25,10 @@ system_cron = CronTab(user=getpass.getuser())
 SUPPORTED_PLAYERS = {'vlc': 'cvlc', 'paplay': 'paplay'}
 DEFAULT_PLAYER = 'vlc'
 
+# Calculation methods that PrayTimes knows. The same list is used for the
+# --method choices and to check a method edited by hand in settings.ini.
+SUPPORTED_METHODS = list(PrayTimes.methods)
+
 
 # HELPER FUNCTIONS
 # ---------------------------------
@@ -36,7 +40,7 @@ def parseArgs():
                         help='Latitude of the location, for example 30.345621')
     parser.add_argument('--lon', type=float, dest='lon',
                         help='Longitude of the location, for example 60.512126')
-    parser.add_argument('--method', choices=['MWL', 'ISNA', 'Egypt', 'Makkah', 'Karachi', 'Tehran', 'Jafari'],
+    parser.add_argument('--method', choices=SUPPORTED_METHODS,
                         dest='method',
                         help='Method of calculation')
     parser.add_argument('--azaan-volume', type=int, dest='default_azaan_vol',
@@ -78,7 +82,8 @@ def getConfig():
             method = args.method
             config['DEFAULT']['method'] = method
         else:
-            method = config['DEFAULT']['method']
+            method = checkMethod(config['DEFAULT']['method'])
+            config['DEFAULT']['method'] = method
     except (KeyError, ValueError) as err:
         print(f"Incorrect value or values not provided: {err}")
         lat = lon = method = None
@@ -156,6 +161,19 @@ def getVolume(arg_value, config, key):
   except (KeyError, ValueError) as err:
     print(f"Using default {key} 0, could not read the configured one: {err}")
     return 0
+
+
+def checkMethod(method):
+  # PrayTimes.setMethod() ignores a name it does not know and keeps calculating
+  # with the previous method, so a typo gives wrong times and no error. Accept
+  # any case (karachi) but return the canonical name, so that it is saved.
+  canonical = {name.lower(): name for name in SUPPORTED_METHODS}
+  name = canonical.get(method.strip().lower())
+  if name is None:
+    print(f"Unsupported method '{method}' in settings.ini, "
+          f"use one of: {', '.join(SUPPORTED_METHODS)}")
+    sys.exit(1)
+  return name
 
 
 def checkPlayer(player):
