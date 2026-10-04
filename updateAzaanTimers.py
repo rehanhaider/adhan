@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 
 import datetime
+import math
 import time
 import sys
 from os.path import dirname, abspath, join as pathjoin
@@ -62,16 +63,16 @@ def getConfig():
     # Get mandatory data. First check args, if not present check settings.ini
     try:
         if args.lat is not None:
-            lat = float(args.lat)
+            lat = checkCoordinate('latitude', float(args.lat), 90)
             config['DEFAULT']['lat'] = str(lat)
         else:
-            lat = float(config['DEFAULT']['lat'])
+            lat = checkCoordinate('latitude', float(config['DEFAULT']['lat']), 90)
         
         if args.lon is not None:
-            lon = float(args.lon)
+            lon = checkCoordinate('longitude', float(args.lon), 180)
             config['DEFAULT']['lon'] = str(lon)
         else:
-            lon = float(config['DEFAULT']['lon'])
+            lon = checkCoordinate('longitude', float(config['DEFAULT']['lon']), 180)
 
         if args.method:
             method = args.method
@@ -145,6 +146,16 @@ def getConfig():
         config.write(configfile)
 
     return lat, lon, method, fajr_azaan_vol, default_azaan_vol, surahBaqarah, surahVolume, player
+
+
+def checkCoordinate(name, value, limit):
+  # float() accepts 'nan' and 'inf', and PrayTimes gives wrong times or none at
+  # all for values out of range. Exit before config.write() so a bad value is
+  # not saved and every nightly update after it does not fail on it too.
+  if not math.isfinite(value) or not -limit <= value <= limit:
+    print(f"Invalid {name} {value}, use a number from {-limit} to {limit}")
+    sys.exit(1)
+  return value
 
 
 def checkPlayer(player):
