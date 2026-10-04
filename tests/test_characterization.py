@@ -1,9 +1,11 @@
-"""Characterization tests: what a full run of updateAzaanTimers.py does today.
+"""Characterization test: a full run of updateAzaanTimers.py as a command.
 
-Each test runs the script as a command, as cron does, in a temporary copy of
-the app. The expected crontab and settings.ini were recorded from the script
-before the refactor into a core and a shell (#16). They protect that refactor:
-they must pass before and after it.
+It runs the script as cron does, in a temporary copy of the app, with the
+default values of main(): the command line, the settings.ini next to the
+script, the user crontab and the system timezone. The expected crontab and
+settings.ini were recorded from the script before the refactor into a core
+and a shell (#16). The tests in test_main.py cover the other cases through
+main() with fakes.
 """
 
 import datetime
@@ -38,7 +40,7 @@ player = vlc
 '''
 
 
-def expectedCrontab(root, fajr_volume, volume, friday=None):
+def expectedCrontab(root, fajr_volume, volume):
     play = f'{root}/playAzaan.sh {root}/media'
     log = f'>> {root}/adhan.log 2>&1 # rpiAdhanClockJob'
     lines = [USER_JOB]
@@ -46,8 +48,6 @@ def expectedCrontab(root, fajr_volume, volume, friday=None):
             PRAYER_TIMES, ['Adhan-fajr.mp3'] + ['Adhan-Makkah1.mp3'] * 4,
             [fajr_volume] + [volume] * 4):
         lines.append(f'{minute} {hour} * * * {play}/{audio} {vol} vlc {log}')
-    if friday is not None:
-        lines.append(f'0 7 * * 5 {play}/002-surah-baqarah-mishary.mp3 {friday} vlc {log}')
     lines.append(f'15 3 * * * python3 {root}/updateAzaanTimers.py {log}')
     lines.append(f'@monthly truncate -s 0 {root}/adhan.log 2>&1 # rpiAdhanClockJob')
     return '\n'.join(lines) + '\n'
@@ -59,19 +59,9 @@ class FullRunTest(unittest.TestCase):
         fakes.guardRealSettings(self)
         self.app = fakes.App(self, crontab=USER_JOB)
 
-    def run_app(self, *argv, **kwargs):
-        return self.app.run(*argv, today=TODAY, **kwargs)
-
     def assertRunOk(self, *argv):
-        result = self.run_app(*argv)
+        result = self.app.run(*argv, today=TODAY)
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
-
-    def test_first_run_installs_the_jobs_and_saves_the_settings(self):
-        """C2, C3, C5: one job per prayer, the update and the log clear."""
-        self.assertRunOk(*FIRST_RUN)
-        self.assertEqual(self.app.crontab(),
-                         expectedCrontab(self.app.root, -500, 500))
-        self.assertEqual(self.app.settings().decode(), FIRST_RUN_SETTINGS)
 
     def test_nightly_run_without_arguments_gives_the_same_schedule(self):
         """C3, C5: the nightly run replaces our jobs from the saved settings."""
@@ -80,67 +70,6 @@ class FullRunTest(unittest.TestCase):
         self.assertEqual(self.app.crontab(),
                          expectedCrontab(self.app.root, -500, 500))
         self.assertEqual(self.app.settings().decode(), FIRST_RUN_SETTINGS)
-
-    def test_hand_edited_settings_are_resolved_value_by_value(self):
-        """C5: any case for the method and the player, a missing volume is 0."""
-        self.app.writeSettings('[DEFAULT]\nlat = 12.8369\nlon = 77.4089\n'
-                               'method = karachi\n\n[VOLUME]\n'
-                               'fajrAzaanVolume = -500\n\n[PLAYER]\nplayer = VLC\n')
-        self.assertRunOk()
-        self.assertEqual(self.app.crontab(),
-                         expectedCrontab(self.app.root, -500, 0))
-        self.assertEqual(self.app.settings().decode(), '''[DEFAULT]
-lat = 12.8369
-lon = 77.4089
-method = Karachi
-
-[VOLUME]
-defaultazaanvolume = 0
-fajrazaanvolume = -500
-
-[PLAYER]
-player = vlc
-
-[FRIDAY]
-playsurahbaqarah = False
-surahvolume = 0
-
-''')
-
-    def test_surah_baqarah_on_adds_the_friday_job(self):
-        """C2: while Surah Baqarah exists (#9), it plays on Friday at 07:00."""
-        settings = FIRST_RUN_SETTINGS.replace(
-            'playsurahbaqarah = False\nsurahvolume = 0',
-            'playsurahbaqarah = true\nsurahvolume = 300')
-        self.app.writeSettings(settings)
-        self.assertRunOk()
-        self.assertEqual(self.app.crontab(),
-                         expectedCrontab(self.app.root, -500, 500, friday=300))
-        self.assertEqual(self.app.settings().decode(), settings)
-
-    def test_bad_input_changes_nothing(self):
-        """C4: exit 1, and the crontab and settings.ini stay as they were."""
-        self.assertRunOk(*FIRST_RUN)
-        cases = [
-            ('latitude 91', ('--lat', '91'), FIRST_RUN_SETTINGS, True),
-            ('latitude nan', ('--lat', 'nan'), FIRST_RUN_SETTINGS, True),
-            ('longitude 181', ('--lon', '181'), FIRST_RUN_SETTINGS, True),
-            ('unknown method in settings.ini', (),
-             FIRST_RUN_SETTINGS.replace('Karachi', 'Foo'), True),
-            ('unsupported player in settings.ini', (),
-             FIRST_RUN_SETTINGS.replace('player = vlc', 'player = winamp'), True),
-            ('latitude missing', (),
-             FIRST_RUN_SETTINGS.replace('lat = 12.8369\n', ''), True),
-            ('player not on PATH', (), FIRST_RUN_SETTINGS, False),
-        ]
-        for name, argv, settings, player_on_path in cases:
-            with self.subTest(name):
-                self.app.writeSettings(settings)
-                crontab = self.app.crontab()
-                result = self.run_app(*argv, player_on_path=player_on_path)
-                self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
-                self.assertEqual(self.app.crontab(), crontab)
-                self.assertEqual(self.app.settings().decode(), settings)
 
 
 if __name__ == '__main__':

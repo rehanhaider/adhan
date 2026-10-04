@@ -1,8 +1,8 @@
 """Shared fakes for the tests.
 
 No test may read or write the real user crontab, the real settings.ini or the
-speakers. The helpers here give each test a temporary copy of the app, a fake
-crontab command, a fake cvlc and a fixed date.
+speakers. The helpers here give the tests temporary folders, a fake crontab
+command, a fake cvlc and a fixed date.
 
 Run the tests with: python3 -m unittest discover tests
 """
@@ -16,6 +16,9 @@ from os.path import dirname, abspath, join as pathjoin
 
 ROOT = dirname(dirname(abspath(__file__)))
 REAL_SETTINGS = pathjoin(ROOT, 'settings.ini')
+
+# So that the tests can import updateAzaanTimers from any folder
+sys.path.insert(0, ROOT)
 
 # Runs updateAzaanTimers.py as cron does, with two system boundaries replaced:
 # the vendored crontab library calls /usr/bin/crontab by its absolute path, so
@@ -62,9 +65,11 @@ else:
     shutil.copyfile(sys.argv[-1], tab)
 '''
 
-FAKE_CVLC = '''#!/bin/sh
-# Fake cvlc: records its arguments, one per line, and plays nothing
+FAKE_PLAYER = '''#!/bin/sh
+# Fake {name}: records its arguments, one per line, and plays nothing
 for arg in "$@"; do echo "$arg"; done > "{log}"
+echo {name} >> "{events}"
+exit {exit_code}
 '''
 
 
@@ -77,11 +82,23 @@ def readBytes(path):
         return None
 
 
+def fileState(path):
+    """Values that change when a file is written, or None if it does not exist.
+
+    It does not open the file, so the guard never reads the real settings.
+    """
+    try:
+        st = os.stat(path)
+    except FileNotFoundError:
+        return None
+    return (st.st_ino, st.st_size, st.st_mtime_ns, st.st_ctime_ns)
+
+
 def guardRealSettings(test):
     """Fail the test if the real settings.ini changes while it runs."""
-    before = readBytes(REAL_SETTINGS)
+    before = fileState(REAL_SETTINGS)
     test.addCleanup(lambda: test.assertEqual(
-        readBytes(REAL_SETTINGS), before,
+        fileState(REAL_SETTINGS), before,
         'a test changed the real settings.ini'))
 
 
@@ -97,11 +114,20 @@ def tempDir(test):
     return path
 
 
-def fakeCvlc(bin_dir):
-    """Put a fake cvlc in bin_dir. Returns the file it records its arguments in."""
-    log = pathjoin(bin_dir, 'cvlc.args')
-    writeExecutable(pathjoin(bin_dir, 'cvlc'), FAKE_CVLC.format(log=log))
+def fakePlayer(bin_dir, name, events, exit_code=0):
+    """Put a fake player in bin_dir that adds its name to the events file.
+
+    Returns the file that it records its arguments in.
+    """
+    log = pathjoin(bin_dir, f'{name}.args')
+    writeExecutable(pathjoin(bin_dir, name),
+                    FAKE_PLAYER.format(name=name, log=log, events=events,
+                                       exit_code=exit_code))
     return log
+
+
+def fakeCvlc(bin_dir, events, exit_code=0):
+    return fakePlayer(bin_dir, 'cvlc', events, exit_code)
 
 
 class App:
@@ -121,15 +147,11 @@ class App:
                         FAKE_CRONTAB.format(python=sys.executable, tab=self.tab))
         self.bin = pathjoin(self.root, 'bin')
         os.mkdir(self.bin)
-        fakeCvlc(self.bin)
-        self.empty_bin = pathjoin(self.root, 'empty-bin')
-        os.mkdir(self.empty_bin)
+        fakeCvlc(self.bin, pathjoin(self.root, 'events'))
 
-    def run(self, *argv, today, player_on_path=True):
+    def run(self, *argv, today):
         """Run updateAzaanTimers.py on the given date in UTC +5:30."""
-        env = dict(os.environ,
-                   PATH=self.bin if player_on_path else self.empty_bin,
-                   TZ='IST-5:30')
+        env = dict(os.environ, PATH=self.bin, TZ='IST-5:30')
         return subprocess.run(
             [sys.executable, '-c', DRIVER,
              pathjoin(self.root, 'updateAzaanTimers.py'),
@@ -142,7 +164,3 @@ class App:
 
     def settings(self):
         return readBytes(self.settings_path)
-
-    def writeSettings(self, text):
-        with open(self.settings_path, 'w') as fh:
-            fh.write(text)
