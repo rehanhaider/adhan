@@ -335,6 +335,12 @@ class ResolveSettingsTest(unittest.TestCase):
             ('audio file with no value (#10)', (), STORED + '[AUDIO]\nfajr =\n'),
             ('audio file with %, which cron changes (#10)', (), STORED + '[AUDIO]\nisha = 100%.mp3\n'),
             ('audio file with % on the command line (#10)', ('--audio', '100%.mp3'), STORED),
+            ('audio file with #, which the crontab reads as a comment (#10)', (),
+             STORED + '[AUDIO]\nisha = Adhan #2.mp3\n'),
+            ('audio file with # and no space (#10)', ('--fajr-audio', 'Adhan#2.mp3'), STORED),
+            ('audio file that starts with a space, settings.ini loses it (#10)',
+             ('--isha-audio', ' Adhan-Madinah.mp3'), STORED),
+            ('audio file that ends with a space (#10)', ('--audio', 'Adhan-Madinah.mp3 '), STORED),
         ]
         for name, argv, text in cases:
             with self.subTest(name):

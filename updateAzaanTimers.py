@@ -32,8 +32,10 @@ SUPPORTED_METHODS = list(PrayTimes.methods)
 
 PRAYERS = ('fajr', 'dhuhr', 'asr', 'maghrib', 'isha')
 
-# The adhan files of each prayer when settings.ini does not give one (#10).
-# 'default' is for each prayer that has no file of its own.
+# The adhan files when settings.ini does not give one (#10). 'default' is for
+# dhuhr, asr, maghrib and isha when they have no file of their own. Fajr
+# always has its own file, so that a settings.ini without [AUDIO] keeps the
+# files of before.
 DEFAULT_AUDIO = {'default': 'Adhan-Makkah1.mp3', 'fajr': 'Adhan-fajr.mp3'}
 
 # Every job this script adds has this comment, so that the next run can remove
@@ -270,10 +272,15 @@ def readAudio(args, config):
       continue
     if not value:
       raise ConfigError(f"No audio file for {key} in [AUDIO] in settings.ini")
-    # cron changes % into a new line, and the job would then not play
-    if '%' in value or '\n' in value:
+    # cron changes % into a new line, and the crontab library reads # as the
+    # start of the comment, so the next update would not find the job
+    if any(char in value for char in '%#\n'):
       raise ConfigError(f"Invalid audio file '{value}' for {key}, a file name "
-                        f"cannot have % or a new line")
+                        f"cannot have %, # or a new line")
+    # settings.ini does not keep a space at the start or the end
+    if value != value.strip():
+      raise ConfigError(f"Invalid audio file '{value}' for {key}, a file name "
+                        f"cannot start or end with a space")
     audio[key] = value
   return audio
 
