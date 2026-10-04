@@ -273,10 +273,11 @@ def readAudio(args, config):
     if not value:
       raise ConfigError(f"No audio file for {key} in [AUDIO] in settings.ini")
     # cron changes % into a new line, and the crontab library reads # as the
-    # start of the comment, so the next update would not find the job
-    if any(char in value for char in '%#\n'):
-      raise ConfigError(f"Invalid audio file '{value}' for {key}, a file name "
-                        f"cannot have %, # or a new line")
+    # start of the comment, so the next update would not find the job.
+    # settings.ini reads a control character such as \r as a new line.
+    if any(char in '%#' or not char.isprintable() for char in value):
+      raise ConfigError(f"Invalid audio file {value!r} for {key}, a file name "
+                        f"cannot have %, # or a control character")
     # settings.ini does not keep a space at the start or the end
     if value != value.strip():
       raise ConfigError(f"Invalid audio file '{value}' for {key}, a file name "

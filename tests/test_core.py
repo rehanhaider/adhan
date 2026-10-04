@@ -341,6 +341,9 @@ class ResolveSettingsTest(unittest.TestCase):
             ('audio file that starts with a space, settings.ini loses it (#10)',
              ('--isha-audio', ' Adhan-Madinah.mp3'), STORED),
             ('audio file that ends with a space (#10)', ('--audio', 'Adhan-Madinah.mp3 '), STORED),
+            ('audio file with a carriage return, settings.ini reads a new line (#10)',
+             ('--audio', 'Adhan\r.mp3'), STORED),
+            ('audio file with a tab (#10)', ('--audio', 'Adhan\t.mp3'), STORED),
         ]
         for name, argv, text in cases:
             with self.subTest(name):
