@@ -41,11 +41,12 @@ TIMES = {'fajr': '05:31', 'dhuhr': '12:30', 'asr': '15:47',
 ROOT = '/opt/adhan'
 NO_OFFSETS = dict.fromkeys(PRAYERS, 0)
 ALL_ON = dict.fromkeys(PRAYERS, True)
+DEFAULT_AUDIO = {'default': 'Adhan-Makkah1.mp3', 'fajr': 'Adhan-fajr.mp3'}
 SETTINGS = app.Settings(lat=12.8369, lon=77.4089, method='Karachi',
                         default_azaan_vol=500, fajr_azaan_vol=-500,
                         surah_baqarah=False, surah_volume=300,
                         player='paplay', offsets=NO_OFFSETS, enabled=ALL_ON,
-                        warnings=[])
+                        audio=DEFAULT_AUDIO, warnings=[])
 
 STORED = '''[DEFAULT]
 lat = 10
@@ -164,6 +165,24 @@ class BuildJobsTest(unittest.TestCase):
             app.Job(7, 0, None, 5, play('002-surah-baqarah-mishary.mp3', 300)),
             UPDATE_JOB, REBOOT_JOB])
 
+    def test_each_prayer_plays_its_audio_file(self):
+        """C2: a prayer plays its own file, else the default file. A name is
+        in media/, an absolute path is used as it is, and a space is quoted
+        for the shell of cron (#10)."""
+        audio = dict(DEFAULT_AUDIO, default='Adhan-Madinah.mp3', fajr='/home/me/fajr.mp3',
+                     isha='My Adhan.mp3')
+        jobs = app.buildJobs(TIMES, SETTINGS._replace(audio=audio), ROOT)
+        log = f'>> {ROOT}/adhan.log 2>&1'
+        self.assertCountEqual(jobs, [
+            app.Job(5, 31, None, None,
+                    f'{ROOT}/playAzaan.sh /home/me/fajr.mp3 -500 paplay {log}'),
+            app.Job(12, 30, None, None, play('Adhan-Madinah.mp3', 500)),
+            app.Job(15, 47, None, None, play('Adhan-Madinah.mp3', 500)),
+            app.Job(18, 13, None, None, play('Adhan-Madinah.mp3', 500)),
+            app.Job(19, 28, None, None,
+                    f"{ROOT}/playAzaan.sh '{ROOT}/media/My Adhan.mp3' 500 paplay {log}"),
+            UPDATE_JOB, REBOOT_JOB])
+
     def test_edge_times_give_the_right_hour_and_minute(self):
         """C2: 00:05 and 23:59 become the right cron hour and minute."""
         times = dict(TIMES, fajr='00:05', isha='23:59')
@@ -264,6 +283,21 @@ class ResolveSettingsTest(unittest.TestCase):
              dict(enabled=dict(ALL_ON, fajr=False))),
             ('all prayers are on by default (#13)', (), only_location,
              dict(enabled=ALL_ON)),
+            ('the stored audio files are used (#10)', (),
+             STORED + '[AUDIO]\ndefault = Adhan-Madinah.mp3\nIsha = /home/me/isha.mp3\n',
+             dict(audio={'default': 'Adhan-Madinah.mp3', 'fajr': 'Adhan-fajr.mp3',
+                         'isha': '/home/me/isha.mp3'})),
+            ('an audio file on the command line wins (#10)',
+             ('--audio', 'Adhan-Makkah2.mp3', '--fajr-audio', 'Adhan-Turkish.mp3',
+              '--asr-audio', 'Adhan-Makkah1-Dua.mp3'),
+             STORED + '[AUDIO]\ndefault = Adhan-Madinah.mp3\nfajr = x.mp3\nisha = y.mp3\n',
+             dict(audio={'default': 'Adhan-Makkah2.mp3', 'fajr': 'Adhan-Turkish.mp3',
+                         'asr': 'Adhan-Makkah1-Dua.mp3', 'isha': 'y.mp3'})),
+            ('the default audio files are the files of today (#10)', (), only_location,
+             dict(audio=DEFAULT_AUDIO)),
+            ('a prayer in [DEFAULT] is not an audio file (#10)', (),
+             STORED.replace('[DEFAULT]\n', '[DEFAULT]\nfajr = x.mp3\n') + '[AUDIO]\n',
+             dict(audio=DEFAULT_AUDIO)),
             ('a prayer in [DEFAULT] is not on or off (#13)', (),
              STORED.replace('[DEFAULT]\n', '[DEFAULT]\nfajr = false\n') + '[ENABLED]\n',
              dict(enabled=ALL_ON)),
@@ -297,6 +331,10 @@ class ResolveSettingsTest(unittest.TestCase):
             ('on or off is maybe (#13)', (), STORED + '[ENABLED]\nfajr = maybe\n'),
             ('on or off with no value (#13)', (), STORED + '[ENABLED]\nisha =\n'),
             ('on or off of an unknown prayer, a typo (#13)', (), STORED + '[ENABLED]\nfjar = false\n'),
+            ('audio file of an unknown prayer, a typo (#10)', (), STORED + '[AUDIO]\nfjar = x.mp3\n'),
+            ('audio file with no value (#10)', (), STORED + '[AUDIO]\nfajr =\n'),
+            ('audio file with %, which cron changes (#10)', (), STORED + '[AUDIO]\nisha = 100%.mp3\n'),
+            ('audio file with % on the command line (#10)', ('--audio', '100%.mp3'), STORED),
         ]
         for name, argv, text in cases:
             with self.subTest(name):

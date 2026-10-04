@@ -100,6 +100,17 @@ class MainTest(FakesTestCase):
             line for line in first.render().splitlines(keepends=True)
             if not line.startswith('31 5 * * * ')))
         self.assertIn('Fajr:    05:31 hrs (not scheduled)', self.output.getvalue())
+        # The audio file of a prayer in settings.ini changes its job only (#10)
+        self.writeSettings(self.settings()
+                           .replace(b'\nfajr = false\n', b'\nfajr = true\n')
+                           .replace(b'fajr = Adhan-fajr.mp3\n',
+                                    b'fajr = Adhan-fajr.mp3\nisha = Adhan-Madinah.mp3\n'))
+        audio = CronTab(tab='')
+        self.assertEqual(self.runMain(cron=audio), 0)
+        self.assertEqual(audio.render(), ''.join(
+            line.replace('Adhan-Makkah1.mp3', 'Adhan-Madinah.mp3') if line.startswith('28 19 ')
+            else line for line in first.render().splitlines(keepends=True)))
+        self.assertIn(b'isha = Adhan-Madinah.mp3', self.settings())
 
     def test_second_run_replaces_our_jobs_and_keeps_the_users(self):
         """C3: a second run does not add jobs, and other jobs stay. The old
@@ -142,6 +153,12 @@ class MainTest(FakesTestCase):
              good.replace('\nfajr = true\n', '\nfajr = maybe\n')),
             ('on or off of an unknown prayer (#13)', (),
              good.replace('\nfajr = true\n', '\nfjar = false\n')),
+            ('audio file not in media/ (#10)', (),
+             good.replace('fajr = Adhan-fajr.mp3', 'fajr = Adhan-fjar.mp3')),
+            ('audio file not in media/, on the command line (#10)',
+             ('--audio', 'Adhan-Makka1.mp3'), good),
+            ('audio file at an absolute path that is not there (#10)',
+             ('--isha-audio', '/no/such/adhan.mp3'), good),
         ]
         for name, argv, text in cases:
             with self.subTest(name):
@@ -164,6 +181,19 @@ class MainTest(FakesTestCase):
         # The nightly update keeps them off
         self.assertEqual(self.runMain(cron=cron), 0)
         self.assertEqual([line for line in cron.render().splitlines() if 'playAzaan.sh' in line], [])
+
+    def test_audio_file_at_an_absolute_path_is_played(self):
+        """C2: an absolute path to a file that is there is played as it is,
+        and the file of a prayer that is off is not checked (#10)."""
+        own = pathjoin(self.bin, 'own adhan.mp3')
+        open(own, 'w').close()
+        cron = CronTab(tab='')
+        self.assertEqual(self.runMain(*FIRST_RUN, '--fajr-audio', own,
+                                      '--isha-audio', 'Missing.mp3', '--no-play-isha',
+                                      cron=cron), 0)
+        fajr = [line for line in cron.render().splitlines() if line.startswith('31 5 ')]
+        self.assertEqual(len(fajr), 1)
+        self.assertIn(f"playAzaan.sh '{own}' 0 vlc ", fajr[0])
 
     def test_player_not_on_path_saves_nothing(self):
         """C4: if the player is not installed, exit and save nothing (#20)."""
