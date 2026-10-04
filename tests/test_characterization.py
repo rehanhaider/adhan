@@ -52,6 +52,10 @@ asr = true
 maghrib = true
 isha = true
 
+[AUDIO]
+default = Adhan-Makkah1.mp3
+fajr = Adhan-fajr.mp3
+
 '''
 
 
