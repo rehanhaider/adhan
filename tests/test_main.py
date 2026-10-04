@@ -92,6 +92,14 @@ class MainTest(FakesTestCase):
         self.assertEqual(self.runMain('--fajr-offset', '0', cron=offset), 0)
         self.assertEqual(offset.render(), first.render())
         self.assertIn(b'\nfajr = 0\n', self.settings())
+        # A prayer that is off in settings.ini has no job (#13)
+        self.writeSettings(self.settings().replace(b'\nfajr = true\n', b'\nfajr = false\n'))
+        off = CronTab(tab='')
+        self.assertEqual(self.runMain(cron=off), 0)
+        self.assertEqual(off.render(), ''.join(
+            line for line in first.render().splitlines(keepends=True)
+            if not line.startswith('31 5 * * * ')))
+        self.assertIn('Fajr:    05:31 hrs (not scheduled)', self.output.getvalue())
 
     def test_second_run_replaces_our_jobs_and_keeps_the_users(self):
         """C3: a second run does not add jobs, and other jobs stay. The old
@@ -130,6 +138,10 @@ class MainTest(FakesTestCase):
              good.replace('\nfajr = 0\n', '\nfjar = 5\n')),
             ('offset not a whole number on the command line (#12)',
              ('--fajr-offset', '5.5'), good),
+            ('on or off is maybe (#13)', (),
+             good.replace('\nfajr = true\n', '\nfajr = maybe\n')),
+            ('on or off of an unknown prayer (#13)', (),
+             good.replace('\nfajr = true\n', '\nfjar = false\n')),
         ]
         for name, argv, text in cases:
             with self.subTest(name):
@@ -138,6 +150,20 @@ class MainTest(FakesTestCase):
                 self.assertNotEqual(self.runMain(*argv, cron=cron), 0)
                 self.assertEqual(cron.render(), crontab)
                 self.assertEqual(self.settings(), text.encode())
+
+    def test_all_prayers_off_is_allowed_and_logged(self):
+        """C2, C3: with all five prayers off, no adhan job stays, the jobs that
+        renew the schedule stay, and the log says why (#13)."""
+        cron = CronTab(tab=USER_JOB + '\n')
+        self.assertEqual(self.runMain(*FIRST_RUN, *[f'--no-play-{name}' for name in app.PRAYERS],
+                                      cron=cron), 0)
+        lines = cron.render().splitlines()
+        self.assertEqual([line for line in lines if 'playAzaan.sh' in line], [])
+        self.assertEqual(len([line for line in lines if 'updateAzaanTimers.py' in line]), 2)
+        self.assertIn('All five prayers are off', self.output.getvalue())
+        # The nightly update keeps them off
+        self.assertEqual(self.runMain(cron=cron), 0)
+        self.assertEqual([line for line in cron.render().splitlines() if 'playAzaan.sh' in line], [])
 
     def test_player_not_on_path_saves_nothing(self):
         """C4: if the player is not installed, exit and save nothing (#20)."""

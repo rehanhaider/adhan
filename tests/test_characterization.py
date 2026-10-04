@@ -45,6 +45,13 @@ asr = 0
 maghrib = 0
 isha = 0
 
+[ENABLED]
+fajr = true
+dhuhr = true
+asr = true
+maghrib = true
+isha = true
+
 '''
 
 
