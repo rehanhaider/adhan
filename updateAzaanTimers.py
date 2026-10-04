@@ -30,6 +30,11 @@ DEFAULT_PLAYER = 'vlc'
 # --method choices and to check a method edited by hand in settings.ini.
 SUPPORTED_METHODS = list(PrayTimes.methods)
 
+# Asr schools that PrayTimes knows (#11). Hanafi uses a shadow factor of 2, so
+# Asr is later. Standard is the default, so the times of today do not change.
+SUPPORTED_ASR = ['Standard', 'Hanafi']
+DEFAULT_ASR = 'Standard'
+
 PRAYERS = ('fajr', 'dhuhr', 'asr', 'maghrib', 'isha')
 
 # The adhan files when settings.ini does not give one (#10). 'default' is for
@@ -63,7 +68,7 @@ class ConfigError(Exception):
 
 
 Settings = namedtuple('Settings', [
-    'lat', 'lon', 'method', 'default_azaan_vol', 'fajr_azaan_vol',
+    'lat', 'lon', 'method', 'asr', 'default_azaan_vol', 'fajr_azaan_vol',
     'surah_baqarah', 'surah_volume', 'player',
     'offsets',  # minutes to add to each prayer time, by prayer name
     'enabled',  # True for each prayer that has a job, by prayer name
@@ -85,6 +90,9 @@ def parseArgs():
     parser.add_argument('--method', choices=SUPPORTED_METHODS,
                         dest='method',
                         help='Method of calculation')
+    # No choices=: checkAsr() accepts any case, and checks settings.ini too
+    parser.add_argument('--asr', dest='asr', metavar='{' + ','.join(SUPPORTED_ASR) + '}',
+                        help=f'Asr school, Hanafi gives a later Asr (default {DEFAULT_ASR})')
     parser.add_argument('--azaan-volume', type=int, dest='default_azaan_vol',
                         help='Volume for azaan (other than fajr) in millibels, 1500 is loud and -30000 is quiet (default 0)')
     parser.add_argument('--fajr-azaan-volume', type=int, dest='fajr_azaan_vol',
@@ -144,6 +152,10 @@ def resolveSettings(args, stored):
                           f"please provide --lat, --lon and --method") from err
 
     # Get optional data
+    if args.asr is not None:
+        asr = checkAsr(args.asr)
+    else:
+        asr = checkAsr(stored['DEFAULT'].get('asr', DEFAULT_ASR))
     default_azaan_vol = getVolume(args.default_azaan_vol, stored, 'defaultAzaanVolume', warnings)
     fajr_azaan_vol = getVolume(args.fajr_azaan_vol, stored, 'fajrAzaanVolume', warnings)
 
@@ -169,7 +181,7 @@ def resolveSettings(args, stored):
     enabled = readEnabled(args, stored)
     audio = readAudio(args, stored)
 
-    return Settings(lat, lon, method, default_azaan_vol, fajr_azaan_vol,
+    return Settings(lat, lon, method, asr, default_azaan_vol, fajr_azaan_vol,
                     surahBaqarah, surahVolume, player, offsets, enabled, audio, warnings)
 
 
@@ -203,6 +215,16 @@ def checkMethod(method):
   if name is None:
     raise ConfigError(f"Unsupported method '{method}' in settings.ini, "
                       f"use one of: {', '.join(SUPPORTED_METHODS)}")
+  return name
+
+
+def checkAsr(asr):
+  # PrayTimes reads an unknown school as a shadow factor, and gives no error
+  # for a typo. Accept any case (hanafi) but return the canonical name.
+  canonical = {name.lower(): name for name in SUPPORTED_ASR}
+  name = canonical.get(asr.strip().lower())
+  if name is None:
+    raise ConfigError(f"Unsupported asr '{asr}', use one of: {', '.join(SUPPORTED_ASR)}")
   return name
 
 
@@ -299,14 +321,17 @@ def readFriday(config):
           int(config['FRIDAY']['surahVolume']))
 
 
-def prayerTimes(lat, lon, method, date, utcOffset, offsets=None):
+def prayerTimes(lat, lon, method, date, utcOffset, offsets=None, asr=DEFAULT_ASR):
     """The five prayer times of one day as 'HH:MM', by prayer name.
 
     utcOffset is in hours and includes daylight saving time. offsets has the
-    minutes to add to each prayer (#12). Raises ConfigError if a time cannot
+    minutes to add to each prayer (#12). asr is the Asr school (#11). Raises ConfigError if a time cannot
     be calculated.
     """
     calculator = PrayTimes(method)
+    # Always set asr: PrayTimes keeps its settings in the class, so a Hanafi
+    # calculation would otherwise change the next Standard one
+    calculator.adjust({'asr': asr})
     if offsets:
         # PrayTimes adds the offsets before it rounds to the minute
         calculator.tune(offsets)
@@ -435,6 +460,7 @@ def saveSettings(config, args, settings, file_path):
     if args.lon is not None:
         config['DEFAULT']['lon'] = str(settings.lon)
     config['DEFAULT']['method'] = settings.method
+    config['DEFAULT']['asr'] = settings.asr
     config["VOLUME"] = {
         "defaultAzaanVolume": str(settings.default_azaan_vol),
         "fajrAzaanVolume": str(settings.fajr_azaan_vol)
@@ -591,7 +617,7 @@ def main(argv=None, settings_path=None, cron=None, today=None, utcOffset=None,
         # Calculate the times before the save too, so a location where a time
         # cannot be calculated is not saved for the nightly update (#31)
         times = prayerTimes(settings.lat, settings.lon, settings.method, today, utcOffset,
-                            settings.offsets)
+                            settings.offsets, settings.asr)
         saveSettings(config, args, settings, settings_path)
     except ConfigError as err:
         log(err)
@@ -600,7 +626,7 @@ def main(argv=None, settings_path=None, cron=None, today=None, utcOffset=None,
     log("---------------------------------")
     log("Co-ordinates provided")
     log("---------------------------------")
-    log(f"Latitude:   {settings.lat} \nLongitude:  {settings.lon} \nMethod:     {settings.method} \nPlayer:     {settings.player}")
+    log(f"Latitude:   {settings.lat} \nLongitude:  {settings.lon} \nMethod:     {settings.method} \nAsr school: {settings.asr} \nPlayer:     {settings.player}")
     log("---------------------------------")
     log()
     log("---------------------------------")
