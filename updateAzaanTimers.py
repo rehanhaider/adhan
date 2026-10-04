@@ -40,6 +40,12 @@ JOB_COMMENT = 'rpiAdhanClockJob'
 LOG_TIME_FORMAT = '%Y-%m-%d %H:%M:%S'
 LOG_DAYS = 30
 
+# After a reboot, the update waits for the clock to synchronize (#15): it asks
+# timedatectl every TIME_SYNC_INTERVAL seconds, for at most TIME_SYNC_TIMEOUT
+# seconds. On this Pi, NTP synchronizes about 40 seconds after the boot.
+TIME_SYNC_TIMEOUT = 15 * 60
+TIME_SYNC_INTERVAL = 5
+
 
 class ConfigError(Exception):
     """A setting is missing or bad, or a prayer time cannot be calculated.
@@ -53,8 +59,10 @@ Settings = namedtuple('Settings', [
     'surah_baqarah', 'surah_volume', 'player',
     'warnings'])  # messages for the user about values that fell back to a default
 
-# One cron job. A day or weekday of None means every day ('*').
-Job = namedtuple('Job', ['hour', 'minute', 'day', 'weekday', 'command'])
+# One cron job. A day or weekday of None means every day ('*'). A job with
+# reboot runs once each time the Pi starts (@reboot), and has no time.
+Job = namedtuple('Job', ['hour', 'minute', 'day', 'weekday', 'command', 'reboot'],
+                 defaults=(False,))
 
 
 def parseArgs():
@@ -72,6 +80,9 @@ def parseArgs():
                         help='Volume for fajr azaan in millibels, 1500 is loud and -30000 is quiet (default 0)')
     parser.add_argument('--player', choices=sorted(SUPPORTED_PLAYERS), dest='player',
                         help=f'Program used to play the adhan (default {DEFAULT_PLAYER})')
+    parser.add_argument('--wait-for-time-sync', action='store_true', dest='wait_for_time_sync',
+                        help='Wait until the clock is synchronized before the update. '
+                             'The update after a reboot uses this')
     return parser
 
 
@@ -214,6 +225,11 @@ def buildJobs(times, settings, root_dir):
                         play('002-surah-baqarah-mishary.mp3', settings.surah_volume)))
     # Run this script again overnight. It also deletes the old lines of the log.
     jobs.append(Job(3, 15, None, None, f"python3 {root_dir}/updateAzaanTimers.py {strLog}"))
+    # And after each reboot, as the Pi can be off at 03:15. That update waits
+    # for the clock first, because a Pi has no clock battery (#15).
+    jobs.append(Job(None, None, None, None,
+                    f"python3 {root_dir}/updateAzaanTimers.py --wait-for-time-sync {strLog}",
+                    reboot=True))
     return jobs
 
 
@@ -332,14 +348,45 @@ def applyJobs(cron, jobs):
     added = []
     for job in jobs:
         item = cron.new(command=job.command, comment=JOB_COMMENT)
-        item.minute.on(job.minute)
-        item.hour.on(job.hour)
-        if job.day is not None:
-            item.day.on(job.day)
-        if job.weekday is not None:
-            item.dow.on(job.weekday)
+        if job.reboot:
+            item.every_reboot()
+        else:
+            item.minute.on(job.minute)
+            item.hour.on(job.hour)
+            if job.day is not None:
+                item.day.on(job.day)
+            if job.weekday is not None:
+                item.dow.on(job.weekday)
         added.append(item)
     return added
+
+
+def waitForTimeSync(timeout, interval=TIME_SYNC_INTERVAL):
+    """Wait until timedatectl says that the clock is synchronized.
+
+    Return True when it is, or False after timeout seconds or if timedatectl
+    is not there. A Pi has no clock battery: at boot, fake-hwclock sets the
+    time that it saved last, and the date is wrong until NTP synchronizes it.
+    """
+    # monotonic, because the clock jumps when it synchronizes
+    deadline = time.monotonic() + timeout
+    while True:
+        try:
+            # It can fail early in the boot. Then ask again.
+            answer = subprocess.run(['timedatectl', 'show', '-p', 'NTPSynchronized', '--value'],
+                                    capture_output=True, text=True, timeout=30).stdout
+        except FileNotFoundError:
+            log("timedatectl was not found, so the script cannot know if the clock is correct")
+            return False
+        except subprocess.TimeoutExpired:
+            answer = ''
+        if answer.strip() == 'yes':
+            return True
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            log(f"The clock did not synchronize in {timeout} seconds")
+            return False
+        time.sleep(min(interval, remaining))
 
 
 def systemUtcOffset():
@@ -348,39 +395,51 @@ def systemUtcOffset():
 
 
 def main(argv=None, settings_path=None, cron=None, today=None, utcOffset=None,
-         log_path=None):
+         log_path=None, sync_timeout=None):
     """Delete the old lines of the log, calculate today's prayer times and
     replace the jobs of this script.
 
     Every argument defaults to the real one: the command line, settings.ini
-    next to this script, the user's crontab, today, the system timezone and
-    adhan.log next to this script.
-    On a ConfigError, print it and exit 1 before the crontab is changed.
+    next to this script, the user's crontab, today, the system timezone,
+    adhan.log next to this script and TIME_SYNC_TIMEOUT.
+    On a ConfigError, print it and exit 1 before the crontab is changed. With
+    --wait-for-time-sync, if the clock does not synchronize, exit 1 too.
     """
     if settings_path is None:
         settings_path = pathjoin(root_dir, 'settings.ini')
+    if log_path is None:
+        log_path = pathjoin(root_dir, 'adhan.log')
+    if sync_timeout is None:
+        sync_timeout = TIME_SYNC_TIMEOUT
+
+    # An error that Python or argparse writes has no timestamp. After this
+    # line, it stays with this run when the log is pruned.
+    log("Updating the prayer times")
+    args = parseArgs().parse_args(argv)
+
+    # The date and the timezone offset come from the clock, so get them after
+    # the wait. Without the clock, keep the schedule that is installed (#15).
+    if args.wait_for_time_sync:
+        if not waitForTimeSync(sync_timeout):
+            log("The prayer times were not updated. The 03:15 update will update them.")
+            sys.exit(1)
+        log("The clock is synchronized")
     if cron is None:
         cron = CronTab(user=getpass.getuser())
     if today is None:
         today = datetime.date.today()
     if utcOffset is None:
         utcOffset = systemUtcOffset()
-    if log_path is None:
-        log_path = pathjoin(root_dir, 'adhan.log')
 
-    # Do this before the script writes to the log. A log with a problem must
-    # never stop the schedule (C4 in #16), so catch any error and continue.
+    # A log with a problem must never stop the schedule (C4 in #16), so catch
+    # any error and continue. The lines above are from this run, so they stay.
     try:
         pruneLogFile(log_path, today)
     except FileNotFoundError:
         pass
     except Exception as err:
         log(f"Could not delete the old lines of {log_path}: {err}")
-    # An error that Python or argparse writes has no timestamp. After this
-    # line, it stays with this run when the log is pruned.
-    log("Updating the prayer times")
 
-    args = parseArgs().parse_args(argv)
     config = ConfigParser()
     config.read(settings_path)
 
