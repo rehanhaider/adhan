@@ -164,6 +164,9 @@ class App:
         shutil.copy(pathjoin(ROOT, 'updateAzaanTimers.py'), self.root)
         shutil.copytree(pathjoin(ROOT, 'modules'), pathjoin(self.root, 'modules'),
                         ignore=shutil.ignore_patterns('__pycache__'))
+        # The update checks that the adhan files are there (#10). Nothing writes
+        # to them, so a link to the real folder is enough.
+        os.symlink(pathjoin(ROOT, 'media'), pathjoin(self.root, 'media'))
         self.settings_path = pathjoin(self.root, 'settings.ini')
         self.tab = pathjoin(self.root, 'user.crontab')
         with open(self.tab, 'w') as fh:

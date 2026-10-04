@@ -8,6 +8,8 @@ from collections import namedtuple
 from os.path import dirname, abspath, join as pathjoin
 import argparse
 import getpass
+import os
+import shlex
 import shutil
 import subprocess
 from configparser import ConfigParser
@@ -29,6 +31,10 @@ DEFAULT_PLAYER = 'vlc'
 SUPPORTED_METHODS = list(PrayTimes.methods)
 
 PRAYERS = ('fajr', 'dhuhr', 'asr', 'maghrib', 'isha')
+
+# The adhan files of each prayer when settings.ini does not give one (#10).
+# 'default' is for each prayer that has no file of its own.
+DEFAULT_AUDIO = {'default': 'Adhan-Makkah1.mp3', 'fajr': 'Adhan-fajr.mp3'}
 
 # Every job this script adds has this comment, so that the next run can remove
 # them and leave the other jobs in the user's crontab alone.
@@ -59,6 +65,7 @@ Settings = namedtuple('Settings', [
     'surah_baqarah', 'surah_volume', 'player',
     'offsets',  # minutes to add to each prayer time, by prayer name
     'enabled',  # True for each prayer that has a job, by prayer name
+    'audio',  # 'default' and the prayers that have their own file, see audioFile()
     'warnings'])  # messages for the user about values that fell back to a default
 
 # One cron job. A day or weekday of None means every day ('*'). A job with
@@ -85,6 +92,14 @@ def parseArgs():
     for name in PRAYERS:
         parser.add_argument(f'--{name}-offset', type=int, dest=f'{name}_offset', metavar='MINUTES',
                             help=f'Minutes to add to the {name} time, may be negative (default 0)')
+    parser.add_argument('--audio', dest='default_audio', metavar='FILE',
+                        help='Adhan file for each prayer that has no file of its own, in media/ '
+                             f"or an absolute path (default {DEFAULT_AUDIO['default']})")
+    for name in PRAYERS:
+        parser.add_argument(f'--{name}-audio', dest=f'{name}_audio', metavar='FILE',
+                            help=f'Adhan file for {name}, in media/ or an absolute path'
+                                 + (f" (default {DEFAULT_AUDIO[name]})" if name in DEFAULT_AUDIO
+                                    else ' (default: the file of --audio)'))
     for name in PRAYERS:
         parser.add_argument(f'--play-{name}', action=argparse.BooleanOptionalAction,
                             dest=f'{name}_enabled',
@@ -150,9 +165,10 @@ def resolveSettings(args, stored):
 
     offsets = readOffsets(args, stored)
     enabled = readEnabled(args, stored)
+    audio = readAudio(args, stored)
 
     return Settings(lat, lon, method, default_azaan_vol, fajr_azaan_vol,
-                    surahBaqarah, surahVolume, player, offsets, enabled, warnings)
+                    surahBaqarah, surahVolume, player, offsets, enabled, audio, warnings)
 
 
 def checkCoordinate(name, value, limit):
@@ -188,16 +204,17 @@ def checkMethod(method):
   return name
 
 
-def prayerSection(config, name):
+def prayerSection(config, name, other_keys=()):
   # The keys written in a section that has one key for each prayer, such as
-  # [OFFSETS]. Stop on an unknown name: a typo must not lose a value.
+  # [OFFSETS], and maybe other_keys. Stop on an unknown name: a typo must not
+  # lose a value.
   # config[name] also has the keys of [DEFAULT] (lat, lon, method), and
   # ConfigParser has no public way to leave them out.
   section = config._sections.get(name, {})
-  unknown = [key for key in section if key not in PRAYERS]
+  unknown = [key for key in section if key not in PRAYERS + tuple(other_keys)]
   if unknown:
     raise ConfigError(f"Unknown prayer '{unknown[0]}' in [{name}] in settings.ini, "
-                      f"use: {', '.join(PRAYERS)}")
+                      f"use: {', '.join(PRAYERS + tuple(other_keys))}")
   return section
 
 
@@ -238,6 +255,36 @@ def readEnabled(args, config):
   return enabled
 
 
+def readAudio(args, config):
+  # The adhan files (#10), from the command line, then [AUDIO] in
+  # settings.ini, then DEFAULT_AUDIO. Keep 'default', 'fajr' and the other
+  # prayers that have a file of their own, so that a later change of
+  # 'default' still changes them. main() checks that the files are there.
+  section = prayerSection(config, 'AUDIO', ['default'])
+  audio = {}
+  for key in ('default',) + PRAYERS:
+    value = getattr(args, f'{key}_audio')
+    if value is None:
+      value = section.get(key, DEFAULT_AUDIO.get(key))
+    if value is None:
+      continue
+    if not value:
+      raise ConfigError(f"No audio file for {key} in [AUDIO] in settings.ini")
+    # cron changes % into a new line, and the job would then not play
+    if '%' in value or '\n' in value:
+      raise ConfigError(f"Invalid audio file '{value}' for {key}, a file name "
+                        f"cannot have % or a new line")
+    audio[key] = value
+  return audio
+
+
+def audioFile(audio, name, root_dir):
+  # The path of the adhan file of the prayer name. A name is a file in
+  # media/, and an absolute path is used as it is.
+  value = audio.get(name, audio['default'])
+  return value if os.path.isabs(value) else f"{root_dir}/media/{value}"
+
+
 def readFriday(config):
   # getboolean, not bool(): bool() on the string "False" is True
   return (config['FRIDAY'].getboolean('playSurahBaqarah', fallback=False),
@@ -275,22 +322,22 @@ def buildJobs(times, settings, root_dir):
     strPlayer = f"{root_dir}/playAzaan.sh"
     strLog = f">> {root_dir}/adhan.log 2>&1"
 
-    def play(audio, volume):
-        return f"{strPlayer} {root_dir}/media/{audio} {volume} {settings.player} {strLog}"
+    def play(path, volume):
+        # quote, so that a path with a space is one argument
+        return f"{strPlayer} {shlex.quote(path)} {volume} {settings.player} {strLog}"
 
     jobs = []
     for name in PRAYERS:
         if not settings.enabled[name]:
             continue
         hour, minute = times[name].split(':')
-        if name == 'fajr':
-            command = play('Adhan-fajr.mp3', settings.fajr_azaan_vol)
-        else:
-            command = play('Adhan-Makkah1.mp3', settings.default_azaan_vol)
+        volume = settings.fajr_azaan_vol if name == 'fajr' else settings.default_azaan_vol
+        command = play(audioFile(settings.audio, name, root_dir), volume)
         jobs.append(Job(int(hour), int(minute), None, None, command))
     if settings.surah_baqarah:
         jobs.append(Job(7, 0, None, 5,
-                        play('002-surah-baqarah-mishary.mp3', settings.surah_volume)))
+                        play(f"{root_dir}/media/002-surah-baqarah-mishary.mp3",
+                             settings.surah_volume)))
     # Run this script again overnight. It also deletes the old lines of the log.
     jobs.append(Job(3, 15, None, None, f"python3 {root_dir}/updateAzaanTimers.py {strLog}"))
     # And after each reboot, as the Pi can be off at 03:15. That update waits
@@ -361,6 +408,17 @@ def checkPlayer(player):
                         "is needed), please upgrade it or use --player vlc")
 
 
+def checkAudio(settings, root_dir):
+  # Stop before the save on an adhan file that is not there or cannot be
+  # read, so that a typo cannot silence an adhan (#10). playAzaan.sh would
+  # only find it at the time of the prayer. Only the prayers that are on
+  # play a file.
+  for name in PRAYERS:
+    path = audioFile(settings.audio, name, root_dir)
+    if settings.enabled[name] and not (os.path.isfile(path) and os.access(path, os.R_OK)):
+      raise ConfigError(f"The audio file for {name} is not there or cannot be read: {path}")
+
+
 def saveSettings(config, args, settings, file_path):
     # Change only the values that come from the command line or that had to be
     # resolved, so the rest of settings.ini stays as the user wrote it
@@ -381,6 +439,7 @@ def saveSettings(config, args, settings, file_path):
     config["PLAYER"] = {"player": settings.player}
     config["OFFSETS"] = {name: str(settings.offsets[name]) for name in PRAYERS}
     config["ENABLED"] = {name: str(settings.enabled[name]).lower() for name in PRAYERS}
+    config["AUDIO"] = settings.audio
 
     with open(file_path, 'w') as configfile:
         config.write(configfile)
@@ -520,6 +579,7 @@ def main(argv=None, settings_path=None, cron=None, today=None, utcOffset=None,
         # Check the player is usable before it is saved, so a failed --player
         # change does not leave every nightly update failing on the same value
         checkPlayer(settings.player)
+        checkAudio(settings, root_dir)
         # Calculate the times before the save too, so a location where a time
         # cannot be calculated is not saved for the nightly update (#31)
         times = prayerTimes(settings.lat, settings.lon, settings.method, today, utcOffset,
