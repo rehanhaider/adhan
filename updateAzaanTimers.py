@@ -4,6 +4,7 @@ import datetime
 import math
 import time
 import sys
+from collections import namedtuple
 from os.path import dirname, abspath, join as pathjoin
 import argparse
 import getpass
@@ -15,10 +16,8 @@ from configparser import ConfigParser
 root_dir = dirname(abspath(__file__))
 sys.path.insert(0, pathjoin(root_dir, 'crontab'))
 from modules.praytimes import PrayTimes
-PT = PrayTimes() 
 
 from crontab import CronTab
-system_cron = CronTab(user=getpass.getuser())
 
 # Players that playAzaan.sh knows how to drive, mapped to the command each one
 # needs on PATH. Add a player here and a matching case in playAzaan.sh.
@@ -29,11 +28,29 @@ DEFAULT_PLAYER = 'vlc'
 # --method choices and to check a method edited by hand in settings.ini.
 SUPPORTED_METHODS = list(PrayTimes.methods)
 
+PRAYERS = ('fajr', 'dhuhr', 'asr', 'maghrib', 'isha')
 
-# HELPER FUNCTIONS
-# ---------------------------------
-# ---------------------------------
-# Function to add azaan time to cron
+# Every job this script adds has this comment, so that the next run can remove
+# them and leave the other jobs in the user's crontab alone.
+JOB_COMMENT = 'rpiAdhanClockJob'
+
+
+class ConfigError(Exception):
+    """A setting is missing or bad, or a prayer time cannot be calculated.
+
+    main() prints it and exits 1 before it changes the crontab.
+    """
+
+
+Settings = namedtuple('Settings', [
+    'lat', 'lon', 'method', 'default_azaan_vol', 'fajr_azaan_vol',
+    'surah_baqarah', 'surah_volume', 'player',
+    'warnings'])  # messages for the user about values that fell back to a default
+
+# One cron job. A day or weekday of None means every day ('*').
+Job = namedtuple('Job', ['hour', 'minute', 'day', 'weekday', 'command'])
+
+
 def parseArgs():
     parser = argparse.ArgumentParser(description='Calculate prayer times and install cronjobs to play Adhan')
     parser.add_argument('--lat', type=float, dest='lat',
@@ -51,107 +68,74 @@ def parseArgs():
                         help=f'Program used to play the adhan (default {DEFAULT_PLAYER})')
     return parser
 
-def getConfig():
-    # Parse arguments
-    parser = parseArgs()
-    args = parser.parse_args()
 
-    
-    # Initialise and read config file if present
-    config = ConfigParser()
-    file_path = pathjoin(root_dir, 'settings.ini')
-    config.read(file_path)
+# CORE: pure functions, no I/O
+# ---------------------------------
+# ---------------------------------
+def resolveSettings(args, stored):
+    """Merge the command line (args) with settings.ini (stored, a ConfigParser).
 
-    lat = lon = method = fajr_azaan_vol = default_azaan_vol = surahBaqarah = surahVolume = player = None
+    Each value comes from the command line, then settings.ini, then the
+    default. Returns Settings, or raises ConfigError.
+    """
+    warnings = []
 
     # Get mandatory data. First check args, if not present check settings.ini
     try:
         if args.lat is not None:
             lat = checkCoordinate('latitude', float(args.lat), 90)
-            config['DEFAULT']['lat'] = str(lat)
         else:
-            lat = checkCoordinate('latitude', float(config['DEFAULT']['lat']), 90)
-        
+            lat = checkCoordinate('latitude', float(stored['DEFAULT']['lat']), 90)
+
         if args.lon is not None:
             lon = checkCoordinate('longitude', float(args.lon), 180)
-            config['DEFAULT']['lon'] = str(lon)
         else:
-            lon = checkCoordinate('longitude', float(config['DEFAULT']['lon']), 180)
+            lon = checkCoordinate('longitude', float(stored['DEFAULT']['lon']), 180)
 
         if args.method:
             method = args.method
-            config['DEFAULT']['method'] = method
         else:
-            method = checkMethod(config['DEFAULT']['method'])
-            config['DEFAULT']['method'] = method
+            method = checkMethod(stored['DEFAULT']['method'])
     except (KeyError, ValueError) as err:
-        print(f"Incorrect value or values not provided: {err}")
-        lat = lon = method = None
-
+        raise ConfigError(f"Incorrect value or values not provided: {err}, "
+                          f"please provide --lat, --lon and --method") from err
 
     # Get optional data
-    default_azaan_vol = getVolume(args.default_azaan_vol, config, 'defaultAzaanVolume')
-    fajr_azaan_vol = getVolume(args.fajr_azaan_vol, config, 'fajrAzaanVolume')
-
-        
-    config["VOLUME"] = {
-        "defaultAzaanVolume": str(default_azaan_vol), 
-        "fajrAzaanVolume": str(fajr_azaan_vol)
-        }
-
+    default_azaan_vol = getVolume(args.default_azaan_vol, stored, 'defaultAzaanVolume', warnings)
+    fajr_azaan_vol = getVolume(args.fajr_azaan_vol, stored, 'fajrAzaanVolume', warnings)
 
     # Setup Surah Baqarah on Fridays
     try:
-        # getboolean, not bool(): bool() on the string "False" is True
-        surahBaqarah = config['FRIDAY'].getboolean('playSurahBaqarah', fallback=False)
-        surahVolume = int(config['FRIDAY']['surahVolume'])
+        surahBaqarah, surahVolume = readFriday(stored)
     except (KeyError, ValueError) as err:
-        print(f"Surah Baqarah not configured, disabling it: {err}")
+        warnings.append(f"Surah Baqarah not configured, disabling it: {err}")
         surahBaqarah = False
         surahVolume = 0
-        config["FRIDAY"] = {"playSurahBaqarah": str(surahBaqarah), "surahVolume": str(surahVolume)}
-    
 
     # Player used by playAzaan.sh. A value edited by hand in settings.ini is not
     # covered by argparse's choices, so validate it here too.
     if args.player:
         player = args.player
     else:
-        player = config.get('PLAYER', 'player', fallback=DEFAULT_PLAYER).strip().lower()
+        player = stored.get('PLAYER', 'player', fallback=DEFAULT_PLAYER).strip().lower()
     if player not in SUPPORTED_PLAYERS:
-        print(f"Unsupported player '{player}' in settings.ini, "
-              f"use one of: {', '.join(sorted(SUPPORTED_PLAYERS))}")
-        sys.exit(1)
-    # Check the player is usable before it is saved, so a failed --player
-    # change does not leave every nightly update failing on the same value
-    checkPlayer(player)
-    config["PLAYER"] = {"player": player}
+        raise ConfigError(f"Unsupported player '{player}' in settings.ini, "
+                          f"use one of: {', '.join(sorted(SUPPORTED_PLAYERS))}")
 
-
-    # If any of the mandatory values not provided or configures in settings.ini, exit and show usage
-    if lat is None or lon is None or not method:
-        print("No values provided, please provide values as per below usage")
-        parser.print_usage()
-        sys.exit(1)
-
-    # save values to settings.ini
-    with open(file_path, 'w') as configfile:
-        config.write(configfile)
-
-    return lat, lon, method, fajr_azaan_vol, default_azaan_vol, surahBaqarah, surahVolume, player
+    return Settings(lat, lon, method, default_azaan_vol, fajr_azaan_vol,
+                    surahBaqarah, surahVolume, player, warnings)
 
 
 def checkCoordinate(name, value, limit):
   # float() accepts 'nan' and 'inf', and PrayTimes gives wrong times or none at
-  # all for values out of range. Exit before config.write() so a bad value is
-  # not saved and every nightly update after it does not fail on it too.
+  # all for values out of range. Stop before settings.ini is saved so a bad
+  # value is not saved and every nightly update after it does not fail on it too.
   if not math.isfinite(value) or not -limit <= value <= limit:
-    print(f"Invalid {name} {value}, use a number from {-limit} to {limit}")
-    sys.exit(1)
+    raise ConfigError(f"Invalid {name} {value}, use a number from {-limit} to {limit}")
   return value
 
 
-def getVolume(arg_value, config, key):
+def getVolume(arg_value, config, key, warnings):
   # Resolve each volume on its own, so a missing or bad stored value falls back
   # to 0 for that volume only and does not discard the other one.
   if arg_value is not None:
@@ -159,7 +143,7 @@ def getVolume(arg_value, config, key):
   try:
     return int(config['VOLUME'][key])
   except (KeyError, ValueError) as err:
-    print(f"Using default {key} 0, could not read the configured one: {err}")
+    warnings.append(f"Using default {key} 0, could not read the configured one: {err}")
     return 0
 
 
@@ -170,12 +154,71 @@ def checkMethod(method):
   canonical = {name.lower(): name for name in SUPPORTED_METHODS}
   name = canonical.get(method.strip().lower())
   if name is None:
-    print(f"Unsupported method '{method}' in settings.ini, "
-          f"use one of: {', '.join(SUPPORTED_METHODS)}")
-    sys.exit(1)
+    raise ConfigError(f"Unsupported method '{method}' in settings.ini, "
+                      f"use one of: {', '.join(SUPPORTED_METHODS)}")
   return name
 
 
+def readFriday(config):
+  # getboolean, not bool(): bool() on the string "False" is True
+  return (config['FRIDAY'].getboolean('playSurahBaqarah', fallback=False),
+          int(config['FRIDAY']['surahVolume']))
+
+
+def prayerTimes(lat, lon, method, date, utcOffset):
+    """The five prayer times of one day as 'HH:MM', by prayer name.
+
+    utcOffset is in hours and includes daylight saving time. Raises
+    ConfigError if a time cannot be calculated.
+    """
+    times = PrayTimes(method).getTimes((date.year, date.month, date.day),
+                                       (lat, lon), utcOffset)
+
+    # PrayTimes returns '-----' when a time cannot be calculated, which happens
+    # at extreme latitudes. Stop before rescheduling anything rather than
+    # crashing part way through, so the crontab that is already installed
+    # keeps working.
+    invalid = [name for name in PRAYERS if ':' not in times[name]]
+    if invalid:
+        raise ConfigError(f"Could not calculate a time for: {', '.join(invalid)}\n"
+                          "Existing cron jobs have been left untouched.")
+    return {name: times[name] for name in PRAYERS}
+
+
+def buildJobs(times, settings, root_dir):
+    """The cron jobs for the prayer times, and the jobs that keep them current."""
+    # Playback goes through playAzaan.sh, which applies the configured volume,
+    # runs the before/after hooks and plays the file with the configured player.
+    strPlayer = f"{root_dir}/playAzaan.sh"
+    strLog = f">> {root_dir}/adhan.log 2>&1"
+
+    def play(audio, volume):
+        return f"{strPlayer} {root_dir}/media/{audio} {volume} {settings.player} {strLog}"
+
+    jobs = []
+    for name in PRAYERS:
+        hour, minute = times[name].split(':')
+        if name == 'fajr':
+            command = play('Adhan-fajr.mp3', settings.fajr_azaan_vol)
+        else:
+            command = play('Adhan-Makkah1.mp3', settings.default_azaan_vol)
+        jobs.append(Job(int(hour), int(minute), None, None, command))
+    if settings.surah_baqarah:
+        jobs.append(Job(7, 0, None, 5,
+                        play('002-surah-baqarah-mishary.mp3', settings.surah_volume)))
+    # Run this script again overnight
+    jobs.append(Job(3, 15, None, None, f"python3 {root_dir}/updateAzaanTimers.py {strLog}"))
+    # Clear the logs every month
+    jobs.append(Job(0, 0, 1, None, f"truncate -s 0 {root_dir}/adhan.log 2>&1"))
+    return jobs
+# ---------------------------------
+# ---------------------------------
+# CORE END
+
+
+# SHELL: reads and writes the crontab, settings.ini and the system
+# ---------------------------------
+# ---------------------------------
 def checkPlayer(player):
   # Note that CronTab.find_command() cannot do this: it searches existing cron
   # jobs, not PATH, and returns a generator (always truthy).
@@ -183,130 +226,125 @@ def checkPlayer(player):
   # is the one that will run at prayer time, so it is the one that must work.
   command = SUPPORTED_PLAYERS[player]
   if not shutil.which(command):
-    print(f"Player '{player}' is selected but {command} was not found on PATH, "
-          f"please install it or choose another player with --player")
-    sys.exit(1)
+    raise ConfigError(f"Player '{player}' is selected but {command} was not found on PATH, "
+                      f"please install it or choose another player with --player")
   if player == 'paplay':
     # paplay reads files through libsndfile, which only supports MP3 from 1.1
     formats = subprocess.run([command, '--list-file-formats'],
                              capture_output=True, text=True).stdout
     if not any(line.split('\t')[0] == 'm1a' for line in formats.splitlines()):
-      print("paplay cannot play MP3 files on this system (libsndfile 1.1 or newer "
-            "is needed), please upgrade it or use --player vlc")
-      sys.exit(1)
+      raise ConfigError("paplay cannot play MP3 files on this system (libsndfile 1.1 or newer "
+                        "is needed), please upgrade it or use --player vlc")
 
 
-def addAzaanTime (strPrayerName, strPrayerTime, objCronTab, strCommand):
-  job = objCronTab.new(command=strCommand,comment=strPrayerName)
-  timeArr = strPrayerTime.split(':')
-  hour = timeArr[0]
-  minute = timeArr[1]
-  job.minute.on(int(minute))
-  job.hour.on(int(hour))
-  job.set_comment(strJobComment)
-  print(job)
-  return
+def saveSettings(config, args, settings, file_path):
+    # Change only the values that come from the command line or that had to be
+    # resolved, so the rest of settings.ini stays as the user wrote it
+    if args.lat is not None:
+        config['DEFAULT']['lat'] = str(settings.lat)
+    if args.lon is not None:
+        config['DEFAULT']['lon'] = str(settings.lon)
+    config['DEFAULT']['method'] = settings.method
+    config["VOLUME"] = {
+        "defaultAzaanVolume": str(settings.default_azaan_vol),
+        "fajrAzaanVolume": str(settings.fajr_azaan_vol)
+        }
+    try:
+        readFriday(config)
+    except (KeyError, ValueError):
+        config["FRIDAY"] = {"playSurahBaqarah": str(settings.surah_baqarah),
+                            "surahVolume": str(settings.surah_volume)}
+    config["PLAYER"] = {"player": settings.player}
 
-def addFriday(strSurahName, objCronTab, strCommand):
-  job = objCronTab.new(command=strCommand,comment=strSurahName)
-  job.minute.on(0)
-  job.hour.on(7)
-  job.dow.on(5)
-  job.set_comment(strJobComment)
-  print(job)
-  return
+    with open(file_path, 'w') as configfile:
+        config.write(configfile)
 
-def addUpdateCronJob (objCronTab, strCommand):
-  job = objCronTab.new(command=strCommand)
-  job.minute.on(15)
-  job.hour.on(3)
-  job.set_comment(strJobComment)
-  print(job)
-  return
 
-def addClearLogsCronJob (objCronTab, strCommand):
-  job = objCronTab.new(command=strCommand)
-  job.day.on(1)
-  job.minute.on(0)
-  job.hour.on(0)
-  job.set_comment(strJobComment)
-  print(job)
-  return
+def applyJobs(cron, jobs):
+    """Replace the jobs of this script in cron with jobs. Other jobs stay."""
+    cron.remove_all(comment=JOB_COMMENT)
+    added = []
+    for job in jobs:
+        item = cron.new(command=job.command, comment=JOB_COMMENT)
+        item.minute.on(job.minute)
+        item.hour.on(job.hour)
+        if job.day is not None:
+            item.day.on(job.day)
+        if job.weekday is not None:
+            item.dow.on(job.weekday)
+        added.append(item)
+    return added
+
+
+def systemUtcOffset():
+    # The system timezone in hours, plus 1 while daylight saving time is on
+    return -(time.timezone/float(3600)) + (1 if time.localtime().tm_isdst else 0)
+
+
+def main(argv=None, settings_path=None, cron=None, today=None, utcOffset=None):
+    """Calculate today's prayer times and replace the jobs of this script.
+
+    Every argument defaults to the real one: the command line, settings.ini
+    next to this script, the user's crontab, today and the system timezone.
+    On a ConfigError, print it and exit 1 before the crontab is changed.
+    """
+    if settings_path is None:
+        settings_path = pathjoin(root_dir, 'settings.ini')
+    if cron is None:
+        cron = CronTab(user=getpass.getuser())
+    if today is None:
+        today = datetime.date.today()
+    if utcOffset is None:
+        utcOffset = systemUtcOffset()
+
+    args = parseArgs().parse_args(argv)
+    config = ConfigParser()
+    config.read(settings_path)
+
+    try:
+        settings = resolveSettings(args, config)
+        for warning in settings.warnings:
+            print(warning)
+        # Check the player is usable before it is saved, so a failed --player
+        # change does not leave every nightly update failing on the same value
+        checkPlayer(settings.player)
+        saveSettings(config, args, settings, settings_path)
+        times = prayerTimes(settings.lat, settings.lon, settings.method, today, utcOffset)
+    except ConfigError as err:
+        print(err)
+        sys.exit(1)
+
+    print("---------------------------------")
+    print("Co-ordinates provided")
+    print("---------------------------------")
+    print(f"Latitude:   {settings.lat} \nLongitude:  {settings.lon} \nMethod:     {settings.method} \nPlayer:     {settings.player}")
+    print("---------------------------------")
+    print()
+    print("---------------------------------")
+    print("Prayer Times")
+    print("---------------------------------")
+    print(f"Fajr:    {times['fajr']} hrs")
+    print(f"Dhuhr:   {times['dhuhr']} hrs")
+    print(f"Asr:     {times['asr']} hrs")
+    print(f"Maghrib: {times['maghrib']} hrs")
+    print(f"Isha:    {times['isha']} hrs")
+    print("---------------------------------")
+
+    # Add times to crontab
+    print()
+    print("---------------------------------")
+    print("Crob jobs scheduled")
+    print("---------------------------------")
+    for job in applyJobs(cron, buildJobs(times, settings, root_dir)):
+        print(job)
+    print("---------------------------------")
+
+    cron.write()
+    print('Script execution finished at: ' + str(datetime.datetime.now()))
 # ---------------------------------
 # ---------------------------------
-# HELPER FUNCTIONS END
-# Merge args with saved values if any
-lat, lon, method, fajr_azaan_vol, default_azaan_vol, surahBaqarah, surahVolume, player = getConfig()
-# Set calculation method, utcOffset and dst here
-# By default system timezone will be used
-# --------------------
-PT.setMethod(method)
-utcOffset = -(time.timezone/float(3600))
-isDst = time.localtime().tm_isdst
+# SHELL END
 
-now = datetime.datetime.now()
-# Playback goes through playAzaan.sh, which applies the configured volume,
-# runs the before/after hooks and plays the file with the configured player.
-strPlayer = f"{root_dir}/playAzaan.sh"
-strLog = f">> {root_dir}/adhan.log 2>&1"
-strPlayFajrAzaanMP3Command = f"{strPlayer} {root_dir}/media/Adhan-fajr.mp3 {fajr_azaan_vol} {player} {strLog}"
-strPlayAzaanMP3Command = f"{strPlayer} {root_dir}/media/Adhan-Makkah1.mp3 {default_azaan_vol} {player} {strLog}"
-strSurahBaqarahMP3Command = f"{strPlayer} {root_dir}/media/002-surah-baqarah-mishary.mp3 {surahVolume} {player} {strLog}"
-strUpdateCommand = f"python3 {root_dir}/updateAzaanTimers.py {strLog}"
-strClearLogsCommand = f"truncate -s 0 {root_dir}/adhan.log 2>&1"
-strJobComment = "rpiAdhanClockJob"
 
-# Calculate prayer times
-times = PT.getTimes((now.year,now.month,now.day), (lat, lon), utcOffset, isDst)
-
-# PrayTimes returns '-----' when a time cannot be calculated, which happens at
-# extreme latitudes. Bail out before rescheduling anything rather than crashing
-# part way through, so the crontab that is already installed keeps working.
-prayers = ('fajr', 'dhuhr', 'asr', 'maghrib', 'isha')
-invalid = [name for name in prayers if ':' not in times[name]]
-if invalid:
-    print(f"Could not calculate a time for: {', '.join(invalid)}")
-    print("Existing cron jobs have been left untouched.")
-    sys.exit(1)
-
-# Remove existing jobs created by this script
-system_cron.remove_all(comment=strJobComment)
-print("---------------------------------")
-print("Co-ordinates provided")
-print("---------------------------------")
-print(f"Latitude:   {lat} \nLongitude:  {lon} \nMethod:     {method} \nPlayer:     {player}")
-print("---------------------------------")
-print()
-print("---------------------------------")
-print("Prayer Times")
-print("---------------------------------")
-print(f"Fajr:    {times['fajr']} hrs")
-print(f"Dhuhr:   {times['dhuhr']} hrs")
-print(f"Asr:     {times['asr']} hrs")
-print(f"Maghrib: {times['maghrib']} hrs")
-print(f"Isha:    {times['isha']} hrs")
-print("---------------------------------")
-
-# Add times to crontab
-print()
-print("---------------------------------")
-print("Crob jobs scheduled")
-print("---------------------------------")
-addAzaanTime('fajr',times['fajr'],system_cron,strPlayFajrAzaanMP3Command)
-addAzaanTime('dhuhr',times['dhuhr'],system_cron,strPlayAzaanMP3Command)
-addAzaanTime('asr',times['asr'],system_cron,strPlayAzaanMP3Command)
-addAzaanTime('maghrib',times['maghrib'],system_cron,strPlayAzaanMP3Command)
-addAzaanTime('isha',times['isha'],system_cron,strPlayAzaanMP3Command)
-if surahBaqarah == True:
-    addFriday('Surah Baqarah', system_cron, strSurahBaqarahMP3Command)
-print("---------------------------------")
-print()
-# Run this script again overnight
-addUpdateCronJob(system_cron, strUpdateCommand)
-
-# Clear the logs every month
-addClearLogsCronJob(system_cron,strClearLogsCommand)
-
-system_cron.write_to_user(user=getpass.getuser())
-print('Script execution finished at: ' + str(now))
-
+if __name__ == "__main__":
+    main()
