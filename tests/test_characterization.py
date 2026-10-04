@@ -4,7 +4,7 @@ It runs the script as cron does, in a temporary copy of the app, with the
 default values of main(): the command line, the settings.ini next to the
 script, the user crontab and the system timezone. The expected crontab and
 settings.ini were recorded from the script before the refactor into a core
-and a shell (#16). The tests in test_main.py cover the other cases through
+and a shell (#16). #7 removed the job that cleared the log every month. The tests in test_main.py cover the other cases through
 main() with fakes.
 """
 
@@ -49,7 +49,6 @@ def expectedCrontab(root, fajr_volume, volume):
             [fajr_volume] + [volume] * 4):
         lines.append(f'{minute} {hour} * * * {play}/{audio} {vol} vlc {log}')
     lines.append(f'15 3 * * * python3 {root}/updateAzaanTimers.py {log}')
-    lines.append(f'@monthly truncate -s 0 {root}/adhan.log 2>&1 # rpiAdhanClockJob')
     return '\n'.join(lines) + '\n'
 
 
@@ -62,6 +61,9 @@ class FullRunTest(unittest.TestCase):
     def assertRunOk(self, *argv):
         result = self.app.run(*argv, today=TODAY)
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        # Each line for adhan.log starts with the time of the run (#7)
+        for line in result.stdout.splitlines():
+            self.assertTrue(line.startswith('2026-01-15 12:00:00'), line)
 
     def test_nightly_run_without_arguments_gives_the_same_schedule(self):
         """C3, C5: the nightly run replaces our jobs from the saved settings."""

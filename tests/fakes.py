@@ -1,8 +1,8 @@
 """Shared fakes for the tests.
 
-No test may read or write the real user crontab, the real settings.ini or the
-speakers. The helpers here give the tests temporary folders, a fake crontab
-command, a fake cvlc and a fixed date.
+No test may read or write the real user crontab, the real settings.ini, the
+real adhan.log or the speakers. The helpers here give the tests temporary
+folders, a fake crontab command, a fake cvlc and a fixed date.
 
 Run the tests with: python3 -m unittest discover tests
 """
@@ -16,6 +16,7 @@ from os.path import dirname, abspath, join as pathjoin
 
 ROOT = dirname(dirname(abspath(__file__)))
 REAL_SETTINGS = pathjoin(ROOT, 'settings.ini')
+REAL_LOG = pathjoin(ROOT, 'adhan.log')
 
 # So that the tests can import updateAzaanTimers from any folder
 sys.path.insert(0, ROOT)
@@ -95,11 +96,11 @@ def fileState(path):
 
 
 def guardRealSettings(test):
-    """Fail the test if the real settings.ini changes while it runs."""
-    before = fileState(REAL_SETTINGS)
-    test.addCleanup(lambda: test.assertEqual(
-        fileState(REAL_SETTINGS), before,
-        'a test changed the real settings.ini'))
+    """Fail the test if the real settings.ini or adhan.log changes while it runs."""
+    for path in (REAL_SETTINGS, REAL_LOG):
+        before = fileState(path)
+        test.addCleanup(lambda path=path, before=before: test.assertEqual(
+            fileState(path), before, f'a test changed the real {path}'))
 
 
 def writeExecutable(path, text):

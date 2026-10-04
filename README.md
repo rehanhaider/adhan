@@ -104,7 +104,7 @@ Crob jobs scheduled
 
 ```
 
-If you look at the last few lines, you'll see that 5 adhan times have been scheduled. Then there is another line at the end which makes sure that at 1am every day the same script will run and calculate adhan times for that day. And lastly, there is a line to clear logs on a monthly basis so that your log file doesn't grow too big.
+If you look at the last few lines, you'll see that 5 adhan times have been scheduled. Then there is another line at the end which makes sure that at 1am every day the same script will run and calculate adhan times for that day. That nightly run also deletes the lines of the log that are older than 30 days, so that your log file doesn't grow too big.
 
 
 Note that for later runs you do not have to supply any arguments as they are saved in `/home/pi/adhan/settings.ini`.
@@ -208,7 +208,7 @@ chmod u+x ./after-hooks.d/01-resume-quran-speaker.sh
 
 ## Tips:
 1. You can see your currently scheduled jobs by running `crontab -l`
-2. The output of the job that runs at 1am every night is being captured in `/home/pi/adhan/adhan.log`. This way you can keep track of all successful runs and any potential issues. This file will be truncated at midnight on the forst day of each month. To view the output type `$ cat /home/pi/adhan/adhan.log`
+2. The output of the job that runs at 1am every night is being captured in `/home/pi/adhan/adhan.log`. This way you can keep track of all successful runs and any potential issues. Each adhan also writes a line when it starts and a line when it ends, with any errors from the player. Each line starts with the date and time, and the log keeps the last 30 days. To view the output type `$ cat /home/pi/adhan/adhan.log`
 
 ## Credits
 I have made modifications / bug fixes but I've used the following as starting point:
