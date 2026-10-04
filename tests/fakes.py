@@ -82,11 +82,23 @@ def readBytes(path):
         return None
 
 
+def fileState(path):
+    """Values that change when a file is written, or None if it does not exist.
+
+    It does not open the file, so the guard never reads the real settings.
+    """
+    try:
+        st = os.stat(path)
+    except FileNotFoundError:
+        return None
+    return (st.st_ino, st.st_size, st.st_mtime_ns, st.st_ctime_ns)
+
+
 def guardRealSettings(test):
     """Fail the test if the real settings.ini changes while it runs."""
-    before = readBytes(REAL_SETTINGS)
+    before = fileState(REAL_SETTINGS)
     test.addCleanup(lambda: test.assertEqual(
-        readBytes(REAL_SETTINGS), before,
+        fileState(REAL_SETTINGS), before,
         'a test changed the real settings.ini'))
 
 

@@ -68,6 +68,11 @@ def play(audio, volume, player='paplay'):
             f'>> {ROOT}/adhan.log 2>&1')
 
 
+UPDATE_JOB = app.Job(3, 15, None, None,
+                     f'python3 {ROOT}/updateAzaanTimers.py >> {ROOT}/adhan.log 2>&1')
+CLEAR_LOG_JOB = app.Job(0, 0, 1, None, f'truncate -s 0 {ROOT}/adhan.log 2>&1')
+
+
 def args(*argv):
     return app.parseArgs().parse_args(argv)
 
@@ -86,6 +91,7 @@ class PrayerTimesTest(unittest.TestCase):
             with self.subTest(name):
                 times = app.prayerTimes(lat, lon, method, date, offset)
                 for prayer, want in zip(PRAYERS, expected):
+                    self.assertRegex(times[prayer], r'^([01][0-9]|2[0-3]):[0-5][0-9]$')
                     diff = abs(minutes(times[prayer]) - minutes(want))
                     self.assertLessEqual(min(diff, 24 * 60 - diff), 1,
                                          f'{prayer} {times[prayer]}, expected {want}')
@@ -112,8 +118,7 @@ class BuildJobsTest(unittest.TestCase):
             with self.subTest(surah_baqarah=surah_baqarah):
                 settings = SETTINGS._replace(surah_baqarah=surah_baqarah)
                 jobs = app.buildJobs(TIMES, settings, ROOT)
-                self.assertCountEqual(
-                    [job for job in jobs if 'playAzaan.sh' in job.command], expected)
+                self.assertCountEqual(jobs, expected + [UPDATE_JOB, CLEAR_LOG_JOB])
 
     def test_edge_times_give_the_right_hour_and_minute(self):
         """C2: 00:05 and 23:59 become the right cron hour and minute."""
@@ -125,10 +130,8 @@ class BuildJobsTest(unittest.TestCase):
     def test_schedule_renews_itself(self):
         """C3: a nightly update at 03:15 and a log clear on day 1 at 00:00."""
         jobs = app.buildJobs(TIMES, SETTINGS, ROOT)
-        self.assertIn(app.Job(3, 15, None, None,
-                              f'python3 {ROOT}/updateAzaanTimers.py >> {ROOT}/adhan.log 2>&1'),
-                      jobs)
-        self.assertIn(app.Job(0, 0, 1, None, f'truncate -s 0 {ROOT}/adhan.log 2>&1'), jobs)
+        self.assertIn(UPDATE_JOB, jobs)
+        self.assertIn(CLEAR_LOG_JOB, jobs)
 
 
 class ResolveSettingsTest(unittest.TestCase):
