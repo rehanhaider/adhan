@@ -70,6 +70,9 @@ def play(audio, volume, player='paplay'):
 
 UPDATE_JOB = app.Job(3, 15, None, None,
                      f'python3 {ROOT}/updateAzaanTimers.py >> {ROOT}/adhan.log 2>&1')
+REBOOT_JOB = app.Job(None, None, None, None,
+                     f'python3 {ROOT}/updateAzaanTimers.py --wait-for-time-sync '
+                     f'>> {ROOT}/adhan.log 2>&1', reboot=True)
 
 
 def args(*argv):
@@ -117,7 +120,7 @@ class BuildJobsTest(unittest.TestCase):
             with self.subTest(surah_baqarah=surah_baqarah):
                 settings = SETTINGS._replace(surah_baqarah=surah_baqarah)
                 jobs = app.buildJobs(TIMES, settings, ROOT)
-                self.assertCountEqual(jobs, expected + [UPDATE_JOB])
+                self.assertCountEqual(jobs, expected + [UPDATE_JOB, REBOOT_JOB])
 
     def test_edge_times_give_the_right_hour_and_minute(self):
         """C2: 00:05 and 23:59 become the right cron hour and minute."""
@@ -127,9 +130,11 @@ class BuildJobsTest(unittest.TestCase):
         self.assertIn(app.Job(23, 59, None, None, play('Adhan-Makkah1.mp3', 500)), jobs)
 
     def test_schedule_renews_itself(self):
-        """C3: a nightly update at 03:15, and no job that clears the log (#7)."""
+        """C3: a nightly update at 03:15, an update after each reboot that
+        waits for the clock (#15), and no job that clears the log (#7)."""
         jobs = app.buildJobs(TIMES, SETTINGS, ROOT)
         self.assertIn(UPDATE_JOB, jobs)
+        self.assertIn(REBOOT_JOB, jobs)
         self.assertEqual([job for job in jobs if 'truncate' in job.command], [])
 
 

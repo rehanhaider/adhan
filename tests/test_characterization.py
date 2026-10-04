@@ -4,8 +4,9 @@ It runs the script as cron does, in a temporary copy of the app, with the
 default values of main(): the command line, the settings.ini next to the
 script, the user crontab and the system timezone. The expected crontab and
 settings.ini were recorded from the script before the refactor into a core
-and a shell (#16). #7 removed the job that cleared the log every month. The tests in test_main.py cover the other cases through
-main() with fakes.
+and a shell (#16). #7 removed the job that cleared the log every month. #15
+added the update after a reboot. The tests in test_main.py cover the other
+cases through main() with fakes.
 """
 
 import datetime
@@ -49,6 +50,7 @@ def expectedCrontab(root, fajr_volume, volume):
             [fajr_volume] + [volume] * 4):
         lines.append(f'{minute} {hour} * * * {play}/{audio} {vol} vlc {log}')
     lines.append(f'15 3 * * * python3 {root}/updateAzaanTimers.py {log}')
+    lines.append(f'@reboot python3 {root}/updateAzaanTimers.py --wait-for-time-sync {log}')
     return '\n'.join(lines) + '\n'
 
 
@@ -69,6 +71,16 @@ class FullRunTest(unittest.TestCase):
         """C3, C5: the nightly run replaces our jobs from the saved settings."""
         self.assertRunOk(*FIRST_RUN)
         self.assertRunOk()
+        self.assertEqual(self.app.crontab(),
+                         expectedCrontab(self.app.root, -500, 500))
+        self.assertEqual(self.app.settings().decode(), FIRST_RUN_SETTINGS)
+
+    def test_update_after_a_reboot_gives_the_same_schedule(self):
+        """C3: the @reboot command waits for the clock, then replaces our
+        jobs from the saved settings (#15)."""
+        self.assertRunOk(*FIRST_RUN)
+        fakes.fakeTimedatectl(self.app.bin, 'yes')
+        self.assertRunOk('--wait-for-time-sync')
         self.assertEqual(self.app.crontab(),
                          expectedCrontab(self.app.root, -500, 500))
         self.assertEqual(self.app.settings().decode(), FIRST_RUN_SETTINGS)

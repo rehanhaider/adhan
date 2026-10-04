@@ -66,6 +66,18 @@ else:
     shutil.copyfile(sys.argv[-1], tab)
 '''
 
+FAKE_TIMEDATECTL = '''#!{python}
+# Fake timedatectl: records its arguments, one call per line, and prints the
+# next answer. After the last answer, it prints the last answer again.
+import sys
+answers = {answers!r}
+with open({calls!r}, 'a') as fh:
+    fh.write(' '.join(sys.argv[1:]) + '\\n')
+with open({calls!r}) as fh:
+    count = len(fh.readlines())
+print(answers[min(count, len(answers)) - 1])
+'''
+
 FAKE_PLAYER = '''#!/bin/sh
 # Fake {name}: records its arguments, one per line, and plays nothing
 for arg in "$@"; do echo "$arg"; done > "{log}"
@@ -129,6 +141,19 @@ def fakePlayer(bin_dir, name, events, exit_code=0):
 
 def fakeCvlc(bin_dir, events, exit_code=0):
     return fakePlayer(bin_dir, 'cvlc', events, exit_code)
+
+
+def fakeTimedatectl(bin_dir, *answers):
+    """Put a fake timedatectl in bin_dir that answers NTPSynchronized with
+    each answer in turn, for example 'no', 'yes'.
+
+    Returns the file that it records its calls in.
+    """
+    calls = pathjoin(bin_dir, 'timedatectl.calls')
+    writeExecutable(pathjoin(bin_dir, 'timedatectl'),
+                    FAKE_TIMEDATECTL.format(python=sys.executable,
+                                            answers=list(answers), calls=calls))
+    return calls
 
 
 class App:
