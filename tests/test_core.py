@@ -221,8 +221,21 @@ class ResolveSettingsTest(unittest.TestCase):
             ('the stored offsets are used, a missing one is 0 (#12)', (),
              STORED + '[OFFSETS]\nfajr = +5\nIsha = -2\n',
              dict(offsets=dict(NO_OFFSETS, fajr=5, isha=-2))),
+            ('an offset on the command line wins, prayer by prayer (#12)',
+             ('--fajr-offset', '7', '--maghrib-offset', '-1'),
+             STORED + '[OFFSETS]\nfajr = 5\nisha = -2\n',
+             dict(offsets=dict(NO_OFFSETS, fajr=7, maghrib=-1, isha=-2))),
+            ('0 on the command line is an offset (#12)', ('--fajr-offset', '0'),
+             STORED + '[OFFSETS]\nfajr = 5\n',
+             dict(offsets=NO_OFFSETS)),
+            ('the command line replaces a bad stored offset (#12)', ('--fajr-offset', '3'),
+             STORED + '[OFFSETS]\nfajr = five\n',
+             dict(offsets=dict(NO_OFFSETS, fajr=3))),
             ('the default offsets are 0 (#12)', (), only_location,
              dict(offsets=NO_OFFSETS)),
+            ('a prayer in [DEFAULT] is not an offset (#12)', (),
+             STORED.replace('[DEFAULT]\n', '[DEFAULT]\nfajr = 9\n') + '[OFFSETS]\nisha = 1\n',
+             dict(offsets=dict(NO_OFFSETS, isha=1))),
         ]
         for name, argv, text, expected in cases:
             with self.subTest(name):
@@ -246,6 +259,7 @@ class ResolveSettingsTest(unittest.TestCase):
             ('offset five is not a number (#12)', (), STORED + '[OFFSETS]\nisha = five\n'),
             ('offset with no value (#12)', (), STORED + '[OFFSETS]\nasr =\n'),
             ('offset of an unknown prayer, a typo (#12)', (), STORED + '[OFFSETS]\nfjar = 5\n'),
+            ('lat in [OFFSETS], also a key of [DEFAULT] (#12)', (), STORED + '[OFFSETS]\nlat = 5\n'),
         ]
         for name, argv, text in cases:
             with self.subTest(name):

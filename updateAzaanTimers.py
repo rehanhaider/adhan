@@ -81,6 +81,9 @@ def parseArgs():
                         help='Volume for fajr azaan in millibels, 1500 is loud and -30000 is quiet (default 0)')
     parser.add_argument('--player', choices=sorted(SUPPORTED_PLAYERS), dest='player',
                         help=f'Program used to play the adhan (default {DEFAULT_PLAYER})')
+    for name in PRAYERS:
+        parser.add_argument(f'--{name}-offset', type=int, dest=f'{name}_offset', metavar='MINUTES',
+                            help=f'Minutes to add to the {name} time, may be negative (default 0)')
     parser.add_argument('--wait-for-time-sync', action='store_true', dest='wait_for_time_sync',
                         help='Wait until the clock is synchronized before the update. '
                              'The update after a reboot uses this')
@@ -140,7 +143,7 @@ def resolveSettings(args, stored):
         raise ConfigError(f"Unsupported player '{player}' in settings.ini, "
                           f"use one of: {', '.join(sorted(SUPPORTED_PLAYERS))}")
 
-    offsets = readOffsets(stored)
+    offsets = readOffsets(args, stored)
 
     return Settings(lat, lon, method, default_azaan_vol, fajr_azaan_vol,
                     surahBaqarah, surahVolume, player, offsets, warnings)
@@ -179,21 +182,24 @@ def checkMethod(method):
   return name
 
 
-def readOffsets(config):
-  # The minutes to add to each prayer time, from [OFFSETS] in settings.ini
-  # (#12). A missing section or prayer is 0. Stop on a value that is not a
-  # whole number, and on an unknown name: a typo must not lose an offset.
-  if not config.has_section('OFFSETS'):
-    return dict.fromkeys(PRAYERS, 0)
-  section = config['OFFSETS']
-  # The keys of [DEFAULT] (lat, lon, method) are in every section too
-  unknown = [key for key in section if key not in PRAYERS and key not in config.defaults()]
+def readOffsets(args, config):
+  # The minutes to add to each prayer time (#12), from the command line, then
+  # [OFFSETS] in settings.ini, then 0. Stop on a value that is not a whole
+  # number, and on an unknown name: a typo must not lose an offset.
+  # Read only the keys written in [OFFSETS]: config['OFFSETS'] also has the
+  # keys of [DEFAULT] (lat, lon, method), and ConfigParser has no public way
+  # to leave them out.
+  section = config._sections.get('OFFSETS', {})
+  unknown = [key for key in section if key not in PRAYERS]
   if unknown:
     raise ConfigError(f"Unknown prayer '{unknown[0]}' in [OFFSETS] in settings.ini, "
                       f"use: {', '.join(PRAYERS)}")
   offsets = {}
   for name in PRAYERS:
-    value = section.get(name, fallback='0')
+    if getattr(args, f'{name}_offset') is not None:
+      offsets[name] = getattr(args, f'{name}_offset')
+      continue
+    value = section.get(name, '0')
     try:
       offsets[name] = int(value)
     except ValueError:

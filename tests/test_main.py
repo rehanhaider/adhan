@@ -88,6 +88,10 @@ class MainTest(FakesTestCase):
         self.assertEqual(offset.render(), first.render().replace(
             '31 5 * * * ', '36 5 * * * '))
         self.assertIn('Fajr:    05:36 hrs (offset +5 minutes)', self.output.getvalue())
+        # An offset on the command line is saved for the nightly update
+        self.assertEqual(self.runMain('--fajr-offset', '0', cron=offset), 0)
+        self.assertEqual(offset.render(), first.render())
+        self.assertIn(b'\nfajr = 0\n', self.settings())
 
     def test_second_run_replaces_our_jobs_and_keeps_the_users(self):
         """C3: a second run does not add jobs, and other jobs stay. The old
@@ -124,6 +128,8 @@ class MainTest(FakesTestCase):
              good.replace('\nfajr = 0\n', '\nfajr = 5.5\n')),
             ('offset of an unknown prayer (#12)', (),
              good.replace('\nfajr = 0\n', '\nfjar = 5\n')),
+            ('offset not a whole number on the command line (#12)',
+             ('--fajr-offset', '5.5'), good),
         ]
         for name, argv, text in cases:
             with self.subTest(name):
