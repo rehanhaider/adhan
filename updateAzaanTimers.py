@@ -308,8 +308,10 @@ def main(argv=None, settings_path=None, cron=None, today=None, utcOffset=None):
         # Check the player is usable before it is saved, so a failed --player
         # change does not leave every nightly update failing on the same value
         checkPlayer(settings.player)
-        saveSettings(config, args, settings, settings_path)
+        # Calculate the times before the save too, so a location where a time
+        # cannot be calculated is not saved for the nightly update (#31)
         times = prayerTimes(settings.lat, settings.lon, settings.method, today, utcOffset)
+        saveSettings(config, args, settings, settings_path)
     except ConfigError as err:
         print(err)
         sys.exit(1)

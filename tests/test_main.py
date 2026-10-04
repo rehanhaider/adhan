@@ -119,8 +119,7 @@ class TimeThatCannotBeCalculatedTest(FakesTestCase):
     """C4: a '-----' time is an error, and the crontab and settings.ini stay.
 
     setUp does a good first run, then a run at latitude 80 in polar night,
-    where PrayTimes cannot calculate Maghrib. An error in setUp is reported
-    as an error, not as the expected failure below.
+    where PrayTimes cannot calculate Maghrib.
     """
 
     def setUp(self):
@@ -137,11 +136,8 @@ class TimeThatCannotBeCalculatedTest(FakesTestCase):
         self.assertNotEqual(self.exit_code, 0)
         self.assertEqual(self.cron.render(), self.crontab_before)
 
-    # Bug: settings.ini is saved before the times are calculated.
-    # https://github.com/rehanhaider/adhan/issues/31
-    @unittest.expectedFailure
     def test_keeps_settings_ini(self):
-        """C4: the run does not save the location it could not use."""
+        """C4: the run does not save the location it could not use (#31)."""
         self.assertEqual(self.settings(), self.settings_before)
 
 
