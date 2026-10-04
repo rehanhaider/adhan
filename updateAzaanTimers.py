@@ -85,20 +85,8 @@ def getConfig():
 
 
     # Get optional data
-    try:
-        if args.default_azaan_vol is not None:
-            default_azaan_vol = int(args.default_azaan_vol)
-        else:
-            default_azaan_vol = int(config['VOLUME']['defaultAzaanVolume'])
-
-        if args.fajr_azaan_vol is not None:
-            fajr_azaan_vol = int(args.fajr_azaan_vol)
-        else:
-            fajr_azaan_vol = int(config['VOLUME']['fajrAzaanVolume'])
-    except (KeyError, ValueError) as err:
-        print(f"Using default volumes, could not read configured ones: {err}")
-        default_azaan_vol = 0
-        fajr_azaan_vol = 0
+    default_azaan_vol = getVolume(args.default_azaan_vol, config, 'defaultAzaanVolume')
+    fajr_azaan_vol = getVolume(args.fajr_azaan_vol, config, 'fajrAzaanVolume')
 
         
     config["VOLUME"] = {
@@ -156,6 +144,18 @@ def checkCoordinate(name, value, limit):
     print(f"Invalid {name} {value}, use a number from {-limit} to {limit}")
     sys.exit(1)
   return value
+
+
+def getVolume(arg_value, config, key):
+  # Resolve each volume on its own, so a missing or bad stored value falls back
+  # to 0 for that volume only and does not discard the other one.
+  if arg_value is not None:
+    return int(arg_value)
+  try:
+    return int(config['VOLUME'][key])
+  except (KeyError, ValueError) as err:
+    print(f"Using default {key} 0, could not read the configured one: {err}")
+    return 0
 
 
 def checkPlayer(player):
