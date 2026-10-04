@@ -47,12 +47,18 @@ class FakesTestCase(unittest.TestCase):
         self.addCleanup(os.environ.__setitem__, 'PATH', os.environ['PATH'])
         os.environ['PATH'] = path
 
-    def runMain(self, *argv, cron):
-        """Run main() with fakes for every input. Returns the exit code."""
-        with redirect_stdout(io.StringIO()):
+    def runMain(self, *argv, cron, sync_timeout=0):
+        """Run main() with fakes for every input. Returns the exit code.
+
+        The output of main() for adhan.log is in self.output.
+        """
+        output = io.StringIO()
+        self.addCleanup(output.close)
+        self.output = output
+        with redirect_stdout(output):
             try:
                 app.main(list(argv), self.settings_path, cron, TODAY, UTC_OFFSET,
-                         self.log_path)
+                         self.log_path, sync_timeout)
             except SystemExit as exit:
                 return exit.code
         return 0
@@ -78,14 +84,18 @@ class MainTest(FakesTestCase):
 
     def test_second_run_replaces_our_jobs_and_keeps_the_users(self):
         """C3: a second run does not add jobs, and other jobs stay. The old
-        job that cleared the log goes (#7)."""
+        job that cleared the log goes (#7). There is one update at 03:15 and
+        one after a reboot (#15)."""
         cron = CronTab(tab=f'{USER_JOB}\n{OLD_CLEAR_LOG_JOB}\n')
         self.assertEqual(self.runMain(*FIRST_RUN, cron=cron), 0)
         self.assertEqual(self.runMain(cron=cron), 0)
         lines = cron.render().splitlines()
         self.assertIn(USER_JOB, lines)
         self.assertEqual(len([line for line in lines if 'playAzaan.sh' in line]), 5)
-        self.assertEqual(len([line for line in lines if 'updateAzaanTimers.py' in line]), 1)
+        updates = [line for line in lines if 'updateAzaanTimers.py' in line]
+        self.assertEqual([line.split()[0] for line in updates], ['15', '@reboot'])
+        for line in updates:
+            self.assertTrue(line.endswith(' # rpiAdhanClockJob'), line)
         self.assertEqual(len([line for line in lines if 'truncate' in line]), 0)
 
     def test_bad_input_changes_nothing(self):
@@ -145,6 +155,66 @@ class TimeThatCannotBeCalculatedTest(FakesTestCase):
     def test_keeps_settings_ini(self):
         """C4: the run does not save the location it could not use (#31)."""
         self.assertEqual(self.settings(), self.settings_before)
+
+
+class TimeSyncTest(FakesTestCase):
+    """The update after a reboot waits until the clock is synchronized (#15).
+
+    A Pi has no clock battery. Until NTP synchronizes the clock, the date can
+    be days too early, and the times for that date are wrong.
+    """
+
+    SYNC_ARGS = ['show -p NTPSynchronized --value']
+
+    def setUp(self):
+        super().setUp()
+        self.cron = CronTab(tab=USER_JOB + '\n')
+        self.assertEqual(self.runMain(*FIRST_RUN, cron=self.cron), 0)
+        self.settings_before = self.settings()
+        self.crontab_before = self.cron.render()
+
+    def calls(self, path):
+        data = fakes.readBytes(path)
+        return data.decode().splitlines() if data else []
+
+    def test_synchronized_clock_updates_the_times(self):
+        """C3: when the clock is synchronized, the update after a reboot
+        gives the same schedule as the nightly update."""
+        calls = fakes.fakeTimedatectl(self.bin, 'yes')
+        cron = CronTab(tab=USER_JOB + '\n')
+        self.assertEqual(self.runMain('--wait-for-time-sync', cron=cron), 0)
+        self.assertEqual(self.calls(calls), self.SYNC_ARGS)
+        self.assertEqual(cron.render(), self.crontab_before)
+
+    def test_waits_until_the_clock_is_synchronized(self):
+        """C3: the wait asks again until the clock is synchronized."""
+        calls = fakes.fakeTimedatectl(self.bin, 'no', 'no', 'yes')
+        with redirect_stdout(io.StringIO()):
+            self.assertTrue(app.waitForTimeSync(60, interval=0.01))
+        self.assertEqual(self.calls(calls), self.SYNC_ARGS * 3)
+
+    def test_clock_that_does_not_synchronize_changes_nothing(self):
+        """C4: if the clock is not synchronized before the timeout, or
+        timedatectl is not there, write it to the log and exit. The crontab
+        and settings.ini stay."""
+        cases = [
+            ('not synchronized', lambda: fakes.fakeTimedatectl(self.bin, 'no')),
+            ('timedatectl not found', lambda: self.setPath(self.empty_bin)),
+        ]
+        for name, make in cases:
+            with self.subTest(name):
+                make()
+                self.assertNotEqual(self.runMain('--wait-for-time-sync', cron=self.cron), 0)
+                self.assertIn('The prayer times were not updated', self.output.getvalue())
+                self.assertEqual(self.cron.render(), self.crontab_before)
+                self.assertEqual(self.settings(), self.settings_before)
+
+    def test_nightly_update_does_not_wait(self):
+        """C3: the 03:15 update and a first run do not ask for the clock."""
+        calls = fakes.fakeTimedatectl(self.bin, 'no')
+        self.assertEqual(self.runMain(cron=self.cron), 0)
+        self.assertEqual(self.runMain(*FIRST_RUN, cron=self.cron), 0)
+        self.assertEqual(self.calls(calls), [])
 
 
 class LogTest(FakesTestCase):
