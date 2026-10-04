@@ -12,6 +12,7 @@ import os
 import re
 import shutil
 import subprocess
+import time
 import unittest
 from os.path import join as pathjoin
 
@@ -128,18 +129,17 @@ class PlayAzaanTest(unittest.TestCase):
         fakes.writeExecutable(pathjoin(self.bin, 'cvlc'),
                               '#!/bin/sh\necho "main input error: cannot open" >&2\nexit 3\n')
         self.hook('before-hooks.d', '10-before', 'echo hook output')
-        log = pathjoin(self.root, 'adhan.log')
         before = datetime.datetime.now().replace(microsecond=0)
-        with open(log, 'a') as fh:
-            # As the cron job does: >> adhan.log 2>&1
-            result = subprocess.run(
-                [pathjoin(self.root, 'playAzaan.sh'), self.audio, '-2000', 'vlc'],
-                env={'PATH': self.bin, 'XDG_RUNTIME_DIR': self.root},
-                stdout=fh, stderr=subprocess.STDOUT, timeout=60)
+        # As the cron job does with >> adhan.log 2>&1, but into a pipe: the
+        # last lines can arrive after the script exits, and the pipe waits
+        # for all of them
+        result = subprocess.run(
+            [pathjoin(self.root, 'playAzaan.sh'), self.audio, '-2000', 'vlc'],
+            env={'PATH': self.bin, 'XDG_RUNTIME_DIR': self.root},
+            stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, timeout=60)
         after = datetime.datetime.now()
         self.assertEqual(result.returncode, 3)
-        with open(log) as fh:
-            lines = fh.read().splitlines()
+        lines = result.stdout.splitlines()
         stamp = re.compile(r'^(\d{4}-\d\d-\d\d \d\d:\d\d:\d\d) (.*)$')
         texts = []
         for line in lines:
@@ -156,6 +156,21 @@ class PlayAzaanTest(unittest.TestCase):
         self.assertIn('main input error: cannot open', texts)
         self.assertLess(texts.index('hook output'), texts.index(start[0]))
         self.assertLess(texts.index(start[0]), texts.index(end[0]))
+
+    def test_a_hook_that_starts_a_background_process_does_not_hold_it(self):
+        """C6: the script exits after the after-hooks, also when a hook
+        starts a process that keeps running (#7)."""
+        self.fakeCvlc()
+        self.hook('before-hooks.d', '10-daemon', 'sleep 5 &')
+        os.symlink(shutil.which('sleep'), pathjoin(self.bin, 'sleep'))
+        with open(pathjoin(self.root, 'adhan.log'), 'a') as log:
+            start = time.monotonic()
+            result = subprocess.run(
+                [pathjoin(self.root, 'playAzaan.sh'), self.audio, '0', 'vlc'],
+                env={'PATH': self.bin, 'XDG_RUNTIME_DIR': self.root},
+                stdout=log, stderr=subprocess.STDOUT, timeout=60)
+        self.assertEqual(result.returncode, 0)
+        self.assertLess(time.monotonic() - start, 4)
 
 
 if __name__ == '__main__':

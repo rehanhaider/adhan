@@ -221,21 +221,28 @@ def pruneLog(lines, today, days=LOG_DAYS):
     """The lines of adhan.log that are not older than days days.
 
     A line with no timestamp, for example a traceback, stays or goes with the
-    timestamped line above it. Lines above the first timestamp have no known
-    age (a log from before #7), so they go. Lines with a date after today
-    stay: a Pi without a clock battery can start with a date that is too
-    early, and the prune must not then delete the recent lines.
+    timestamped line above it. Lines above the first timestamp (a log from
+    before #7, or a traceback in a new log) stay or go with the first
+    timestamped line below them, and a log with no timestamp stays. Lines with
+    a date after today stay: a Pi without a clock battery can start with a
+    date that is too early, and the prune must not then delete the recent
+    lines.
     """
     first_day = today - datetime.timedelta(days=days)
     kept = []
-    keep = False
+    head = []  # the lines above the first timestamp
+    keep = None  # None until the first timestamp
     for line in lines:
         day = logDate(line)
         if day is not None:
+            if keep is None and day >= first_day:
+                kept.extend(head)
             keep = day >= first_day
-        if keep:
+        if keep is None:
+            head.append(line)
+        elif keep:
             kept.append(line)
-    return kept
+    return kept if keep is not None else head
 
 
 def logDate(line):
