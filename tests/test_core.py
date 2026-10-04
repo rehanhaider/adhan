@@ -151,6 +151,8 @@ class PruneLogTest(unittest.TestCase):
             ('a line with no timestamp at the top is deleted, its age is unknown',
              [no_stamp, now], [now]),
             ('a bad date is not a timestamp', [old, '2026-13-45 00:00:00 bad\n', now], [now]),
+            ('a line after today stays, the clock can be behind',
+             [now, '2026-04-02 03:15:00 later\n'], [now, '2026-04-02 03:15:00 later\n']),
             ('an empty log stays empty', [], []),
         ]
         for name, lines, expected in cases:

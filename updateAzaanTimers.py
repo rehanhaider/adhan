@@ -218,11 +218,13 @@ def buildJobs(times, settings, root_dir):
 
 
 def pruneLog(lines, today, days=LOG_DAYS):
-    """The lines of adhan.log from the last days days, up to today.
+    """The lines of adhan.log that are not older than days days.
 
     A line with no timestamp, for example a traceback, stays or goes with the
     timestamped line above it. Lines above the first timestamp have no known
-    age (a log from before #7), so they go.
+    age (a log from before #7), so they go. Lines with a date after today
+    stay: a Pi without a clock battery can start with a date that is too
+    early, and the prune must not then delete the recent lines.
     """
     first_day = today - datetime.timedelta(days=days)
     kept = []
