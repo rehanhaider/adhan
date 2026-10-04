@@ -70,7 +70,6 @@ def play(audio, volume, player='paplay'):
 
 UPDATE_JOB = app.Job(3, 15, None, None,
                      f'python3 {ROOT}/updateAzaanTimers.py >> {ROOT}/adhan.log 2>&1')
-CLEAR_LOG_JOB = app.Job(0, 0, 1, None, f'truncate -s 0 {ROOT}/adhan.log 2>&1')
 
 
 def args(*argv):
@@ -118,7 +117,7 @@ class BuildJobsTest(unittest.TestCase):
             with self.subTest(surah_baqarah=surah_baqarah):
                 settings = SETTINGS._replace(surah_baqarah=surah_baqarah)
                 jobs = app.buildJobs(TIMES, settings, ROOT)
-                self.assertCountEqual(jobs, expected + [UPDATE_JOB, CLEAR_LOG_JOB])
+                self.assertCountEqual(jobs, expected + [UPDATE_JOB])
 
     def test_edge_times_give_the_right_hour_and_minute(self):
         """C2: 00:05 and 23:59 become the right cron hour and minute."""
@@ -128,10 +127,40 @@ class BuildJobsTest(unittest.TestCase):
         self.assertIn(app.Job(23, 59, None, None, play('Adhan-Makkah1.mp3', 500)), jobs)
 
     def test_schedule_renews_itself(self):
-        """C3: a nightly update at 03:15 and a log clear on day 1 at 00:00."""
+        """C3: a nightly update at 03:15, and no job that clears the log (#7)."""
         jobs = app.buildJobs(TIMES, SETTINGS, ROOT)
         self.assertIn(UPDATE_JOB, jobs)
-        self.assertIn(CLEAR_LOG_JOB, jobs)
+        self.assertEqual([job for job in jobs if 'truncate' in job.command], [])
+
+
+class PruneLogTest(unittest.TestCase):
+
+    def test_keeps_the_last_30_days(self):
+        """C3: the nightly update keeps the log small, so it keeps running (#7)."""
+        today = datetime.date(2026, 3, 31)
+        old = '2026-02-28 23:59:59 31 days ago\n'
+        oldest_kept = '2026-03-01 00:00:00 30 days ago\n'
+        now = '2026-03-31 03:15:00 today\n'
+        no_stamp = 'Traceback (most recent call last):\n'
+        cases = [
+            ('a line from 31 days ago is deleted', [old, now], [now]),
+            ('lines from 30 days ago and today stay', [oldest_kept, now], [oldest_kept, now]),
+            ('a line with no timestamp stays with the line above it',
+             [old, no_stamp, oldest_kept, no_stamp, now],
+             [oldest_kept, no_stamp, now]),
+            ('lines above the first timestamp go with it',
+             [no_stamp, old, now], [now]),
+            ('lines above the first timestamp stay with it',
+             [no_stamp, now], [no_stamp, now]),
+            ('a log with no timestamp stays, its age is unknown', [no_stamp], [no_stamp]),
+            ('a bad date is not a timestamp', [old, '2026-13-45 00:00:00 bad\n', now], [now]),
+            ('a line after today stays, the clock can be behind',
+             [now, '2026-04-02 03:15:00 later\n'], [now, '2026-04-02 03:15:00 later\n']),
+            ('an empty log stays empty', [], []),
+        ]
+        for name, lines, expected in cases:
+            with self.subTest(name):
+                self.assertEqual(app.pruneLog(lines, today), expected)
 
 
 class ResolveSettingsTest(unittest.TestCase):

@@ -10,6 +10,21 @@
 
 set -u
 
+# Put the date and time before each line. printf %(...)T is a bash builtin, so
+# this does not need date on PATH.
+timestamp() {
+  local line
+  while IFS= read -r line || [ -n "$line" ]; do
+    printf '%(%Y-%m-%d %H:%M:%S)T %s\n' -1 "$line"
+  done
+}
+
+# All output, from this script, the hooks and the player, goes through
+# timestamp(), so each line in adhan.log starts with the date and time. This is
+# not a pipe that the script waits for: a hook can start a process that keeps
+# the output open, and the script must still exit after the after-hooks.
+exec > >(timestamp) 2>&1
+
 if [ $# -lt 1 ]; then
   echo "USAGE: $0 <azaan-audio-path> [<volume-millibels>] [vlc|paplay]"
   exit 1
@@ -65,11 +80,13 @@ export XDG_RUNTIME_DIR="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}"
 
 run_hooks "$root_dir/before-hooks.d" before
 
+echo "Playing $audio_path with $player at gain $gain (volume $vol_mb)"
 case "$player" in
   vlc)
     # --play-and-exit is essential. Without it cvlc stays resident after
     # playback and holds the audio sink open, leaking one process per adhan.
-    cvlc --play-and-exit --gain "$gain" "$audio_path" vlc://quit > /dev/null 2>&1
+    # Its output goes to the log. Do not add -q: it also hides the errors.
+    cvlc --play-and-exit --gain "$gain" "$audio_path" vlc://quit
     status=$?
     ;;
   paplay)
@@ -80,6 +97,7 @@ case "$player" in
     status=$?
     ;;
 esac
+echo "Finished $audio_path with $player, exit status $status"
 
 run_hooks "$root_dir/after-hooks.d" after
 

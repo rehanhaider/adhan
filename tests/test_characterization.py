@@ -4,7 +4,7 @@ It runs the script as cron does, in a temporary copy of the app, with the
 default values of main(): the command line, the settings.ini next to the
 script, the user crontab and the system timezone. The expected crontab and
 settings.ini were recorded from the script before the refactor into a core
-and a shell (#16). The tests in test_main.py cover the other cases through
+and a shell (#16). #7 removed the job that cleared the log every month. The tests in test_main.py cover the other cases through
 main() with fakes.
 """
 
@@ -49,7 +49,6 @@ def expectedCrontab(root, fajr_volume, volume):
             [fajr_volume] + [volume] * 4):
         lines.append(f'{minute} {hour} * * * {play}/{audio} {vol} vlc {log}')
     lines.append(f'15 3 * * * python3 {root}/updateAzaanTimers.py {log}')
-    lines.append(f'@monthly truncate -s 0 {root}/adhan.log 2>&1 # rpiAdhanClockJob')
     return '\n'.join(lines) + '\n'
 
 
@@ -62,6 +61,9 @@ class FullRunTest(unittest.TestCase):
     def assertRunOk(self, *argv):
         result = self.app.run(*argv, today=TODAY)
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        # Each line for adhan.log starts with the time of the run (#7)
+        for line in result.stdout.splitlines():
+            self.assertTrue(line.startswith('2026-01-15 12:00:00'), line)
 
     def test_nightly_run_without_arguments_gives_the_same_schedule(self):
         """C3, C5: the nightly run replaces our jobs from the saved settings."""
@@ -70,6 +72,21 @@ class FullRunTest(unittest.TestCase):
         self.assertEqual(self.app.crontab(),
                          expectedCrontab(self.app.root, -500, 500))
         self.assertEqual(self.app.settings().decode(), FIRST_RUN_SETTINGS)
+
+    def test_an_error_is_in_the_log_after_the_start_of_its_run(self):
+        """C4: a run that fails on a bad settings.ini has a traceback with no
+        timestamp. It comes after the first line of its own run, so the
+        prune keeps it with that run (#7)."""
+        with open(self.app.settings_path, 'w') as fh:
+            fh.write('lat = 12.8369\n')  # no [DEFAULT] header
+        log_path = f'{self.app.root}/adhan.log'
+        with open(log_path, 'a') as log:
+            result = self.app.run(today=TODAY, log=log)
+        self.assertNotEqual(result.returncode, 0)
+        with open(log_path) as fh:
+            lines = fh.read().splitlines()
+        self.assertTrue(lines[0].startswith('2026-01-15 12:00:00 '), lines)
+        self.assertIn('Traceback (most recent call last):', lines[1:])
 
 
 if __name__ == '__main__':

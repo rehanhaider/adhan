@@ -1,8 +1,8 @@
 """Shared fakes for the tests.
 
-No test may read or write the real user crontab, the real settings.ini or the
-speakers. The helpers here give the tests temporary folders, a fake crontab
-command, a fake cvlc and a fixed date.
+No test may read or write the real user crontab, the real settings.ini, the
+real adhan.log or the speakers. The helpers here give the tests temporary
+folders, a fake crontab command, a fake cvlc and a fixed date.
 
 Run the tests with: python3 -m unittest discover tests
 """
@@ -16,6 +16,7 @@ from os.path import dirname, abspath, join as pathjoin
 
 ROOT = dirname(dirname(abspath(__file__)))
 REAL_SETTINGS = pathjoin(ROOT, 'settings.ini')
+REAL_LOG = pathjoin(ROOT, 'adhan.log')
 
 # So that the tests can import updateAzaanTimers from any folder
 sys.path.insert(0, ROOT)
@@ -95,11 +96,11 @@ def fileState(path):
 
 
 def guardRealSettings(test):
-    """Fail the test if the real settings.ini changes while it runs."""
-    before = fileState(REAL_SETTINGS)
-    test.addCleanup(lambda: test.assertEqual(
-        fileState(REAL_SETTINGS), before,
-        'a test changed the real settings.ini'))
+    """Fail the test if the real settings.ini or adhan.log changes while it runs."""
+    for path in (REAL_SETTINGS, REAL_LOG):
+        before = fileState(path)
+        test.addCleanup(lambda path=path, before=before: test.assertEqual(
+            fileState(path), before, f'a test changed the real {path}'))
 
 
 def writeExecutable(path, text):
@@ -149,14 +150,20 @@ class App:
         os.mkdir(self.bin)
         fakeCvlc(self.bin, pathjoin(self.root, 'events'))
 
-    def run(self, *argv, today):
-        """Run updateAzaanTimers.py on the given date in UTC +5:30."""
+    def run(self, *argv, today, log=None):
+        """Run updateAzaanTimers.py on the given date in UTC +5:30.
+
+        With log, stdout and stderr go to that open file, as with
+        >> adhan.log 2>&1 in the cron job.
+        """
         env = dict(os.environ, PATH=self.bin, TZ='IST-5:30')
+        output = (dict(stdout=log, stderr=subprocess.STDOUT) if log
+                  else dict(capture_output=True))
         return subprocess.run(
             [sys.executable, '-c', DRIVER,
              pathjoin(self.root, 'updateAzaanTimers.py'),
              pathjoin(ROOT, 'crontab'), self.croncmd, today.isoformat(), *argv],
-            cwd=self.root, env=env, capture_output=True, text=True, timeout=60)
+            cwd=self.root, env=env, text=True, timeout=60, **output)
 
     def crontab(self):
         with open(self.tab) as fh:

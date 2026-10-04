@@ -7,9 +7,12 @@ speakers stay silent. Each test names the promise (C1-C6 in #16) that it
 protects.
 """
 
+import datetime
 import os
+import re
 import shutil
 import subprocess
+import time
 import unittest
 from os.path import join as pathjoin
 
@@ -118,6 +121,56 @@ class PlayAzaanTest(unittest.TestCase):
                     os.remove(cvlc)
                 self.assertEqual(self.run_play(audio, '0', 'vlc').returncode, 1)
                 self.assertEqual(self.events_seen(), [])
+
+    def test_log_has_a_timestamp_and_a_start_and_end_line(self):
+        """C6: each line in adhan.log has a timestamp. The playback has a
+        start line and an end line, and the errors of the player are in it (#7)."""
+        # A fake cvlc that fails with an error on stderr
+        fakes.writeExecutable(pathjoin(self.bin, 'cvlc'),
+                              '#!/bin/sh\necho "main input error: cannot open" >&2\nexit 3\n')
+        self.hook('before-hooks.d', '10-before', 'echo hook output')
+        before = datetime.datetime.now().replace(microsecond=0)
+        # As the cron job does with >> adhan.log 2>&1, but into a pipe: the
+        # last lines can arrive after the script exits, and the pipe waits
+        # for all of them
+        result = subprocess.run(
+            [pathjoin(self.root, 'playAzaan.sh'), self.audio, '-2000', 'vlc'],
+            env={'PATH': self.bin, 'XDG_RUNTIME_DIR': self.root},
+            stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, timeout=60)
+        after = datetime.datetime.now()
+        self.assertEqual(result.returncode, 3)
+        lines = result.stdout.splitlines()
+        stamp = re.compile(r'^(\d{4}-\d\d-\d\d \d\d:\d\d:\d\d) (.*)$')
+        texts = []
+        for line in lines:
+            match = stamp.match(line)
+            self.assertIsNotNone(match, f'no timestamp: {line!r}')
+            when = datetime.datetime.strptime(match.group(1), '%Y-%m-%d %H:%M:%S')
+            self.assertTrue(before <= when <= after, line)
+            texts.append(match.group(2))
+        start = [text for text in texts if text.startswith('Playing ')]
+        end = [text for text in texts if text.startswith('Finished ')]
+        self.assertEqual(start, [f'Playing {self.audio} with vlc at gain 0.1000 (volume -2000)'])
+        self.assertEqual(end, [f'Finished {self.audio} with vlc, exit status 3'])
+        self.assertIn('hook output', texts)
+        self.assertIn('main input error: cannot open', texts)
+        self.assertLess(texts.index('hook output'), texts.index(start[0]))
+        self.assertLess(texts.index(start[0]), texts.index(end[0]))
+
+    def test_a_hook_that_starts_a_background_process_does_not_hold_it(self):
+        """C6: the script exits after the after-hooks, also when a hook
+        starts a process that keeps running (#7)."""
+        self.fakeCvlc()
+        self.hook('before-hooks.d', '10-daemon', 'sleep 5 &')
+        os.symlink(shutil.which('sleep'), pathjoin(self.bin, 'sleep'))
+        with open(pathjoin(self.root, 'adhan.log'), 'a') as log:
+            start = time.monotonic()
+            result = subprocess.run(
+                [pathjoin(self.root, 'playAzaan.sh'), self.audio, '0', 'vlc'],
+                env={'PATH': self.bin, 'XDG_RUNTIME_DIR': self.root},
+                stdout=log, stderr=subprocess.STDOUT, timeout=60)
+        self.assertEqual(result.returncode, 0)
+        self.assertLess(time.monotonic() - start, 4)
 
 
 if __name__ == '__main__':

@@ -1,7 +1,8 @@
 """Integration tests for main() with fakes (#16).
 
-main() gets a settings.ini in a temporary folder, an in-memory crontab, a
-fixed date and UTC offset, and a PATH with only a fake cvlc. Each test names
+main() gets a settings.ini and an adhan.log in a temporary folder, an
+in-memory crontab, a fixed date and UTC offset, and a PATH with only a fake
+cvlc. Each test names
 the promise (C1-C6 in #16) that it protects.
 """
 
@@ -20,6 +21,8 @@ CronTab = app.CronTab  # the vendored library, as the app imports it
 TODAY = datetime.date(2026, 1, 15)
 UTC_OFFSET = 5.5
 USER_JOB = '@daily /home/user/backup.sh'
+# The job that cleared the log before #7
+OLD_CLEAR_LOG_JOB = '@monthly truncate -s 0 /home/pi/adhan/adhan.log 2>&1 # rpiAdhanClockJob'
 FIRST_RUN = ('--lat', '12.8369', '--lon', '77.4089', '--method', 'Karachi',
              '--azaan-volume', '500')
 
@@ -31,6 +34,7 @@ class FakesTestCase(unittest.TestCase):
         fakes.guardRealSettings(self)
         folder = fakes.tempDir(self)
         self.settings_path = pathjoin(folder, 'settings.ini')
+        self.log_path = pathjoin(folder, 'adhan.log')
         self.bin = pathjoin(folder, 'bin')
         self.empty_bin = pathjoin(folder, 'empty-bin')
         os.mkdir(self.bin)
@@ -47,7 +51,8 @@ class FakesTestCase(unittest.TestCase):
         """Run main() with fakes for every input. Returns the exit code."""
         with redirect_stdout(io.StringIO()):
             try:
-                app.main(list(argv), self.settings_path, cron, TODAY, UTC_OFFSET)
+                app.main(list(argv), self.settings_path, cron, TODAY, UTC_OFFSET,
+                         self.log_path)
             except SystemExit as exit:
                 return exit.code
         return 0
@@ -72,15 +77,16 @@ class MainTest(FakesTestCase):
         self.assertEqual(nightly.render(), first.render())
 
     def test_second_run_replaces_our_jobs_and_keeps_the_users(self):
-        """C3: a second run does not add jobs, and other jobs stay."""
-        cron = CronTab(tab=USER_JOB + '\n')
+        """C3: a second run does not add jobs, and other jobs stay. The old
+        job that cleared the log goes (#7)."""
+        cron = CronTab(tab=f'{USER_JOB}\n{OLD_CLEAR_LOG_JOB}\n')
         self.assertEqual(self.runMain(*FIRST_RUN, cron=cron), 0)
         self.assertEqual(self.runMain(cron=cron), 0)
         lines = cron.render().splitlines()
         self.assertIn(USER_JOB, lines)
         self.assertEqual(len([line for line in lines if 'playAzaan.sh' in line]), 5)
         self.assertEqual(len([line for line in lines if 'updateAzaanTimers.py' in line]), 1)
-        self.assertEqual(len([line for line in lines if 'truncate' in line]), 1)
+        self.assertEqual(len([line for line in lines if 'truncate' in line]), 0)
 
     def test_bad_input_changes_nothing(self):
         """C4: exit with an error, and the crontab and settings.ini stay."""
@@ -139,6 +145,61 @@ class TimeThatCannotBeCalculatedTest(FakesTestCase):
     def test_keeps_settings_ini(self):
         """C4: the run does not save the location it could not use (#31)."""
         self.assertEqual(self.settings(), self.settings_before)
+
+
+class LogTest(FakesTestCase):
+    """C3: the update keeps the last 30 days of adhan.log (#7)."""
+
+    OLD = '2025-12-01 03:15:00 older than 30 days\n'
+    NEW = '2026-01-14 03:15:00 yesterday\n'
+
+    def writeLog(self, text):
+        with open(self.log_path, 'w') as fh:
+            fh.write(text)
+
+    def readLog(self):
+        with open(self.log_path) as fh:
+            return fh.read()
+
+    def test_prune_keeps_text_that_is_written_after_it(self):
+        """C3: the nightly job writes to adhan.log with >> (O_APPEND). The
+        prune changes the same file, so the text after it is at the end."""
+        self.writeLog(self.OLD + self.NEW)
+        fd = os.open(self.log_path, os.O_WRONLY | os.O_APPEND)
+        self.addCleanup(os.close, fd)
+        app.pruneLogFile(self.log_path, TODAY)
+        os.write(fd, b'after the prune\n')
+        self.assertEqual(self.readLog(), self.NEW + 'after the prune\n')
+
+    def test_update_prunes_the_log(self):
+        """C3: the update deletes the old lines, then does the schedule."""
+        self.writeLog(self.OLD + self.NEW)
+        cron = CronTab(tab='')
+        self.assertEqual(self.runMain(*FIRST_RUN, cron=cron), 0)
+        self.assertEqual(self.readLog(), self.NEW)
+        self.assertEqual(len([line for line in cron.render().splitlines()
+                              if 'playAzaan.sh' in line]), 5)
+
+    def test_a_log_with_a_problem_does_not_stop_the_update(self):
+        """C3: a log that is missing or cannot be read does not stop the
+        schedule. Cron can still add to a log that it cannot read (>> needs
+        only write), so the update runs and must not fail on the prune."""
+        def missing():
+            pass
+
+        def write_only():
+            self.writeLog(self.OLD + self.NEW)
+            os.chmod(self.log_path, 0o200)
+            if os.access(self.log_path, os.R_OK):
+                self.skipTest('root can read a write-only file')
+
+        for name, make in (('missing', missing), ('cannot be read', write_only)):
+            with self.subTest(name):
+                make()
+                cron = CronTab(tab='')
+                self.assertEqual(self.runMain(*FIRST_RUN, cron=cron), 0)
+                self.assertEqual(len([line for line in cron.render().splitlines()
+                                      if 'playAzaan.sh' in line]), 5)
 
 
 if __name__ == '__main__':

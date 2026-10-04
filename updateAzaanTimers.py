@@ -34,6 +34,12 @@ PRAYERS = ('fajr', 'dhuhr', 'asr', 'maghrib', 'isha')
 # them and leave the other jobs in the user's crontab alone.
 JOB_COMMENT = 'rpiAdhanClockJob'
 
+# Each line that this script and playAzaan.sh write to adhan.log starts with a
+# timestamp in this format. Each update deletes the lines that are older than
+# LOG_DAYS days (#7).
+LOG_TIME_FORMAT = '%Y-%m-%d %H:%M:%S'
+LOG_DAYS = 30
+
 
 class ConfigError(Exception):
     """A setting is missing or bad, or a prayer time cannot be calculated.
@@ -206,11 +212,45 @@ def buildJobs(times, settings, root_dir):
     if settings.surah_baqarah:
         jobs.append(Job(7, 0, None, 5,
                         play('002-surah-baqarah-mishary.mp3', settings.surah_volume)))
-    # Run this script again overnight
+    # Run this script again overnight. It also deletes the old lines of the log.
     jobs.append(Job(3, 15, None, None, f"python3 {root_dir}/updateAzaanTimers.py {strLog}"))
-    # Clear the logs every month
-    jobs.append(Job(0, 0, 1, None, f"truncate -s 0 {root_dir}/adhan.log 2>&1"))
     return jobs
+
+
+def pruneLog(lines, today, days=LOG_DAYS):
+    """The lines of adhan.log that are not older than days days.
+
+    A line with no timestamp, for example a traceback, stays or goes with the
+    timestamped line above it. Lines above the first timestamp (a log from
+    before #7, or a traceback in a new log) stay or go with the first
+    timestamped line below them, and a log with no timestamp stays. Lines with
+    a date after today stay: a Pi without a clock battery can start with a
+    date that is too early, and the prune must not then delete the recent
+    lines.
+    """
+    first_day = today - datetime.timedelta(days=days)
+    kept = []
+    head = []  # the lines above the first timestamp
+    keep = None  # None until the first timestamp
+    for line in lines:
+        day = logDate(line)
+        if day is not None:
+            if keep is None and day >= first_day:
+                kept.extend(head)
+            keep = day >= first_day
+        if keep is None:
+            head.append(line)
+        elif keep:
+            kept.append(line)
+    return kept if keep is not None else head
+
+
+def logDate(line):
+    # The date of the timestamp at the start of the line, or None
+    try:
+        return datetime.datetime.strptime(line[:19], LOG_TIME_FORMAT).date()
+    except ValueError:
+        return None
 # ---------------------------------
 # ---------------------------------
 # CORE END
@@ -260,6 +300,32 @@ def saveSettings(config, args, settings, file_path):
         config.write(configfile)
 
 
+def log(text=''):
+    """Print text for adhan.log, with the date and time before each line."""
+    stamp = datetime.datetime.now().strftime(LOG_TIME_FORMAT)
+    for line in str(text).split('\n'):
+        # flush, so that the lines stay in order with a traceback on stderr
+        print(f'{stamp} {line}'.rstrip(), flush=True)
+
+
+def pruneLogFile(path, today):
+    """Delete the lines of the log that pruneLog() does not keep, in place.
+
+    Change the same file. Do not write a new file and rename it: the cron job
+    that runs this script adds its output to the log with >> (O_APPEND), and
+    after a rename that output goes to the old file, which is deleted.
+    """
+    # surrogateescape and newline='' write back the lines that stay byte for
+    # byte, also when a player wrote bytes that are not UTF-8
+    with open(path, 'r+', encoding='utf-8', errors='surrogateescape', newline='') as fh:
+        lines = fh.readlines()
+        kept = pruneLog(lines, today)
+        if kept != lines:
+            fh.seek(0)
+            fh.write(''.join(kept))
+            fh.truncate()
+
+
 def applyJobs(cron, jobs):
     """Replace the jobs of this script in cron with jobs. Other jobs stay."""
     cron.remove_all(comment=JOB_COMMENT)
@@ -281,11 +347,14 @@ def systemUtcOffset():
     return -(time.timezone/float(3600)) + (1 if time.localtime().tm_isdst else 0)
 
 
-def main(argv=None, settings_path=None, cron=None, today=None, utcOffset=None):
-    """Calculate today's prayer times and replace the jobs of this script.
+def main(argv=None, settings_path=None, cron=None, today=None, utcOffset=None,
+         log_path=None):
+    """Delete the old lines of the log, calculate today's prayer times and
+    replace the jobs of this script.
 
     Every argument defaults to the real one: the command line, settings.ini
-    next to this script, the user's crontab, today and the system timezone.
+    next to this script, the user's crontab, today, the system timezone and
+    adhan.log next to this script.
     On a ConfigError, print it and exit 1 before the crontab is changed.
     """
     if settings_path is None:
@@ -296,6 +365,20 @@ def main(argv=None, settings_path=None, cron=None, today=None, utcOffset=None):
         today = datetime.date.today()
     if utcOffset is None:
         utcOffset = systemUtcOffset()
+    if log_path is None:
+        log_path = pathjoin(root_dir, 'adhan.log')
+
+    # Do this before the script writes to the log. A log with a problem must
+    # never stop the schedule (C4 in #16), so catch any error and continue.
+    try:
+        pruneLogFile(log_path, today)
+    except FileNotFoundError:
+        pass
+    except Exception as err:
+        log(f"Could not delete the old lines of {log_path}: {err}")
+    # An error that Python or argparse writes has no timestamp. After this
+    # line, it stays with this run when the log is pruned.
+    log("Updating the prayer times")
 
     args = parseArgs().parse_args(argv)
     config = ConfigParser()
@@ -304,7 +387,7 @@ def main(argv=None, settings_path=None, cron=None, today=None, utcOffset=None):
     try:
         settings = resolveSettings(args, config)
         for warning in settings.warnings:
-            print(warning)
+            log(warning)
         # Check the player is usable before it is saved, so a failed --player
         # change does not leave every nightly update failing on the same value
         checkPlayer(settings.player)
@@ -313,36 +396,36 @@ def main(argv=None, settings_path=None, cron=None, today=None, utcOffset=None):
         times = prayerTimes(settings.lat, settings.lon, settings.method, today, utcOffset)
         saveSettings(config, args, settings, settings_path)
     except ConfigError as err:
-        print(err)
+        log(err)
         sys.exit(1)
 
-    print("---------------------------------")
-    print("Co-ordinates provided")
-    print("---------------------------------")
-    print(f"Latitude:   {settings.lat} \nLongitude:  {settings.lon} \nMethod:     {settings.method} \nPlayer:     {settings.player}")
-    print("---------------------------------")
-    print()
-    print("---------------------------------")
-    print("Prayer Times")
-    print("---------------------------------")
-    print(f"Fajr:    {times['fajr']} hrs")
-    print(f"Dhuhr:   {times['dhuhr']} hrs")
-    print(f"Asr:     {times['asr']} hrs")
-    print(f"Maghrib: {times['maghrib']} hrs")
-    print(f"Isha:    {times['isha']} hrs")
-    print("---------------------------------")
+    log("---------------------------------")
+    log("Co-ordinates provided")
+    log("---------------------------------")
+    log(f"Latitude:   {settings.lat} \nLongitude:  {settings.lon} \nMethod:     {settings.method} \nPlayer:     {settings.player}")
+    log("---------------------------------")
+    log()
+    log("---------------------------------")
+    log("Prayer Times")
+    log("---------------------------------")
+    log(f"Fajr:    {times['fajr']} hrs")
+    log(f"Dhuhr:   {times['dhuhr']} hrs")
+    log(f"Asr:     {times['asr']} hrs")
+    log(f"Maghrib: {times['maghrib']} hrs")
+    log(f"Isha:    {times['isha']} hrs")
+    log("---------------------------------")
 
     # Add times to crontab
-    print()
-    print("---------------------------------")
-    print("Crob jobs scheduled")
-    print("---------------------------------")
+    log()
+    log("---------------------------------")
+    log("Crob jobs scheduled")
+    log("---------------------------------")
     for job in applyJobs(cron, buildJobs(times, settings, root_dir)):
-        print(job)
-    print("---------------------------------")
+        log(job)
+    log("---------------------------------")
 
     cron.write()
-    print('Script execution finished at: ' + str(datetime.datetime.now()))
+    log('Script execution finished at: ' + str(datetime.datetime.now()))
 # ---------------------------------
 # ---------------------------------
 # SHELL END
