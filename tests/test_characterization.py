@@ -73,6 +73,21 @@ class FullRunTest(unittest.TestCase):
                          expectedCrontab(self.app.root, -500, 500))
         self.assertEqual(self.app.settings().decode(), FIRST_RUN_SETTINGS)
 
+    def test_an_error_is_in_the_log_after_the_start_of_its_run(self):
+        """C4: a run that fails on a bad settings.ini has a traceback with no
+        timestamp. It comes after the first line of its own run, so the
+        prune keeps it with that run (#7)."""
+        with open(self.app.settings_path, 'w') as fh:
+            fh.write('lat = 12.8369\n')  # no [DEFAULT] header
+        log_path = f'{self.app.root}/adhan.log'
+        with open(log_path, 'a') as log:
+            result = self.app.run(today=TODAY, log=log)
+        self.assertNotEqual(result.returncode, 0)
+        with open(log_path) as fh:
+            lines = fh.read().splitlines()
+        self.assertTrue(lines[0].startswith('2026-01-15 12:00:00 '), lines)
+        self.assertIn('Traceback (most recent call last):', lines[1:])
+
 
 if __name__ == '__main__':
     unittest.main()

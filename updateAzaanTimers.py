@@ -304,7 +304,8 @@ def log(text=''):
     """Print text for adhan.log, with the date and time before each line."""
     stamp = datetime.datetime.now().strftime(LOG_TIME_FORMAT)
     for line in str(text).split('\n'):
-        print(f'{stamp} {line}'.rstrip())
+        # flush, so that the lines stay in order with a traceback on stderr
+        print(f'{stamp} {line}'.rstrip(), flush=True)
 
 
 def pruneLogFile(path, today):
@@ -375,6 +376,9 @@ def main(argv=None, settings_path=None, cron=None, today=None, utcOffset=None,
         pass
     except Exception as err:
         log(f"Could not delete the old lines of {log_path}: {err}")
+    # An error that Python or argparse writes has no timestamp. After this
+    # line, it stays with this run when the log is pruned.
+    log("Updating the prayer times")
 
     args = parseArgs().parse_args(argv)
     config = ConfigParser()

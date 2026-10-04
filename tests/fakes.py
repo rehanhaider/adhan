@@ -150,14 +150,20 @@ class App:
         os.mkdir(self.bin)
         fakeCvlc(self.bin, pathjoin(self.root, 'events'))
 
-    def run(self, *argv, today):
-        """Run updateAzaanTimers.py on the given date in UTC +5:30."""
+    def run(self, *argv, today, log=None):
+        """Run updateAzaanTimers.py on the given date in UTC +5:30.
+
+        With log, stdout and stderr go to that open file, as with
+        >> adhan.log 2>&1 in the cron job.
+        """
         env = dict(os.environ, PATH=self.bin, TZ='IST-5:30')
+        output = (dict(stdout=log, stderr=subprocess.STDOUT) if log
+                  else dict(capture_output=True))
         return subprocess.run(
             [sys.executable, '-c', DRIVER,
              pathjoin(self.root, 'updateAzaanTimers.py'),
              pathjoin(ROOT, 'crontab'), self.croncmd, today.isoformat(), *argv],
-            cwd=self.root, env=env, capture_output=True, text=True, timeout=60)
+            cwd=self.root, env=env, text=True, timeout=60, **output)
 
     def crontab(self):
         with open(self.tab) as fh:
