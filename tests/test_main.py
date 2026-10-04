@@ -81,6 +81,13 @@ class MainTest(FakesTestCase):
         nightly = CronTab(tab='')
         self.assertEqual(self.runMain(cron=nightly), 0)
         self.assertEqual(nightly.render(), first.render())
+        # An offset in settings.ini moves its prayer only (#12)
+        self.writeSettings(self.settings().replace(b'\nfajr = 0\n', b'\nfajr = 5\n'))
+        offset = CronTab(tab='')
+        self.assertEqual(self.runMain(cron=offset), 0)
+        self.assertEqual(offset.render(), first.render().replace(
+            '31 5 * * * ', '36 5 * * * '))
+        self.assertIn('Fajr:    05:36 hrs (offset +5 minutes)', self.output.getvalue())
 
     def test_second_run_replaces_our_jobs_and_keeps_the_users(self):
         """C3: a second run does not add jobs, and other jobs stay. The old
@@ -113,6 +120,10 @@ class MainTest(FakesTestCase):
             ('latitude missing', (), good.replace('lat = 12.8369\n', '')),
             ('longitude missing', (), good.replace('lon = 77.4089\n', '')),
             ('method missing', (), good.replace('method = Karachi\n', '')),
+            ('offset not a whole number (#12)', (),
+             good.replace('\nfajr = 0\n', '\nfajr = 5.5\n')),
+            ('offset of an unknown prayer (#12)', (),
+             good.replace('\nfajr = 0\n', '\nfjar = 5\n')),
         ]
         for name, argv, text in cases:
             with self.subTest(name):

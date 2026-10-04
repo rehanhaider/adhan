@@ -38,6 +38,13 @@ surahvolume = 0
 [PLAYER]
 player = vlc
 
+[OFFSETS]
+fajr = 0
+dhuhr = 0
+asr = 0
+maghrib = 0
+isha = 0
+
 '''
 
 

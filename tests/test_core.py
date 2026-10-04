@@ -39,10 +39,11 @@ FIXED_TIMES = [
 TIMES = {'fajr': '05:31', 'dhuhr': '12:30', 'asr': '15:47',
          'maghrib': '18:13', 'isha': '19:28'}
 ROOT = '/opt/adhan'
+NO_OFFSETS = dict.fromkeys(PRAYERS, 0)
 SETTINGS = app.Settings(lat=12.8369, lon=77.4089, method='Karachi',
                         default_azaan_vol=500, fajr_azaan_vol=-500,
                         surah_baqarah=False, surah_volume=300,
-                        player='paplay', warnings=[])
+                        player='paplay', offsets=NO_OFFSETS, warnings=[])
 
 STORED = '''[DEFAULT]
 lat = 10
@@ -97,6 +98,28 @@ class PrayerTimesTest(unittest.TestCase):
                     diff = abs(minutes(times[prayer]) - minutes(want))
                     self.assertLessEqual(min(diff, 24 * 60 - diff), 1,
                                          f'{prayer} {times[prayer]}, expected {want}')
+
+    def test_offsets_move_each_time_by_its_minutes(self):
+        """C1: an offset adds its minutes to its prayer only (#12), and the
+        next calculation without offsets gives the times without them."""
+        args = (12.8369, 77.4089, 'Karachi', datetime.date(2026, 1, 15), 5.5)
+        base = app.prayerTimes(*args)
+        offsets = {'fajr': 5, 'dhuhr': -3, 'asr': 0, 'maghrib': 6, 'isha': 15}
+        moved = app.prayerTimes(*args, offsets=offsets)
+        for prayer in PRAYERS:
+            self.assertEqual(minutes(moved[prayer]), minutes(base[prayer]) + offsets[prayer],
+                             prayer)
+        self.assertEqual(app.prayerTimes(*args), base)
+        self.assertEqual(app.prayerTimes(*args, offsets=NO_OFFSETS), base)
+
+    def test_praytimes_tune_changes_its_own_times_only(self):
+        """C1: PrayTimes.tune() adds the minutes. Before #12 it raised
+        AttributeError, and all PrayTimes objects shared one set of offsets."""
+        tuned, other = PrayTimes('Karachi'), PrayTimes('Karachi')
+        tuned.tune({'fajr': 5})
+        args = ((2026, 1, 15), (12.8369, 77.4089), 5.5)
+        self.assertEqual(tuned.getTimes(*args)['fajr'], '05:36')
+        self.assertEqual(other.getTimes(*args)['fajr'], '05:31')
 
     def test_praytimes_starts_with_mwl(self):
         """C1: PrayTimes() without a method uses MWL, not Jafari (#26)."""
@@ -195,6 +218,11 @@ class ResolveSettingsTest(unittest.TestCase):
             ('karachi is accepted as Karachi (#26)', (),
              STORED.replace('ISNA', 'karachi'),
              dict(method='Karachi')),
+            ('the stored offsets are used, a missing one is 0 (#12)', (),
+             STORED + '[OFFSETS]\nfajr = +5\nIsha = -2\n',
+             dict(offsets=dict(NO_OFFSETS, fajr=5, isha=-2))),
+            ('the default offsets are 0 (#12)', (), only_location,
+             dict(offsets=NO_OFFSETS)),
         ]
         for name, argv, text, expected in cases:
             with self.subTest(name):
@@ -214,6 +242,10 @@ class ResolveSettingsTest(unittest.TestCase):
             ('latitude missing', (), STORED.replace('lat = 10\n', '')),
             ('longitude missing', (), STORED.replace('lon = 20\n', '')),
             ('method missing', (), STORED.replace('method = ISNA\n', '')),
+            ('offset 5.5 is not a whole number (#12)', (), STORED + '[OFFSETS]\nfajr = 5.5\n'),
+            ('offset five is not a number (#12)', (), STORED + '[OFFSETS]\nisha = five\n'),
+            ('offset with no value (#12)', (), STORED + '[OFFSETS]\nasr =\n'),
+            ('offset of an unknown prayer, a typo (#12)', (), STORED + '[OFFSETS]\nfjar = 5\n'),
         ]
         for name, argv, text in cases:
             with self.subTest(name):
