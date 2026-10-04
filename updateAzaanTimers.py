@@ -57,6 +57,7 @@ class ConfigError(Exception):
 Settings = namedtuple('Settings', [
     'lat', 'lon', 'method', 'default_azaan_vol', 'fajr_azaan_vol',
     'surah_baqarah', 'surah_volume', 'player',
+    'offsets',  # minutes to add to each prayer time, by prayer name
     'warnings'])  # messages for the user about values that fell back to a default
 
 # One cron job. A day or weekday of None means every day ('*'). A job with
@@ -80,6 +81,9 @@ def parseArgs():
                         help='Volume for fajr azaan in millibels, 1500 is loud and -30000 is quiet (default 0)')
     parser.add_argument('--player', choices=sorted(SUPPORTED_PLAYERS), dest='player',
                         help=f'Program used to play the adhan (default {DEFAULT_PLAYER})')
+    for name in PRAYERS:
+        parser.add_argument(f'--{name}-offset', type=int, dest=f'{name}_offset', metavar='MINUTES',
+                            help=f'Minutes to add to the {name} time, may be negative (default 0)')
     parser.add_argument('--wait-for-time-sync', action='store_true', dest='wait_for_time_sync',
                         help='Wait until the clock is synchronized before the update. '
                              'The update after a reboot uses this')
@@ -139,8 +143,10 @@ def resolveSettings(args, stored):
         raise ConfigError(f"Unsupported player '{player}' in settings.ini, "
                           f"use one of: {', '.join(sorted(SUPPORTED_PLAYERS))}")
 
+    offsets = readOffsets(args, stored)
+
     return Settings(lat, lon, method, default_azaan_vol, fajr_azaan_vol,
-                    surahBaqarah, surahVolume, player, warnings)
+                    surahBaqarah, surahVolume, player, offsets, warnings)
 
 
 def checkCoordinate(name, value, limit):
@@ -176,20 +182,50 @@ def checkMethod(method):
   return name
 
 
+def readOffsets(args, config):
+  # The minutes to add to each prayer time (#12), from the command line, then
+  # [OFFSETS] in settings.ini, then 0. Stop on a value that is not a whole
+  # number, and on an unknown name: a typo must not lose an offset.
+  # Read only the keys written in [OFFSETS]: config['OFFSETS'] also has the
+  # keys of [DEFAULT] (lat, lon, method), and ConfigParser has no public way
+  # to leave them out.
+  section = config._sections.get('OFFSETS', {})
+  unknown = [key for key in section if key not in PRAYERS]
+  if unknown:
+    raise ConfigError(f"Unknown prayer '{unknown[0]}' in [OFFSETS] in settings.ini, "
+                      f"use: {', '.join(PRAYERS)}")
+  offsets = {}
+  for name in PRAYERS:
+    if getattr(args, f'{name}_offset') is not None:
+      offsets[name] = getattr(args, f'{name}_offset')
+      continue
+    value = section.get(name, '0')
+    try:
+      offsets[name] = int(value)
+    except ValueError:
+      raise ConfigError(f"Invalid offset '{value}' for {name} in settings.ini, "
+                        f"use a whole number of minutes, for example 5 or -3") from None
+  return offsets
+
+
 def readFriday(config):
   # getboolean, not bool(): bool() on the string "False" is True
   return (config['FRIDAY'].getboolean('playSurahBaqarah', fallback=False),
           int(config['FRIDAY']['surahVolume']))
 
 
-def prayerTimes(lat, lon, method, date, utcOffset):
+def prayerTimes(lat, lon, method, date, utcOffset, offsets=None):
     """The five prayer times of one day as 'HH:MM', by prayer name.
 
-    utcOffset is in hours and includes daylight saving time. Raises
-    ConfigError if a time cannot be calculated.
+    utcOffset is in hours and includes daylight saving time. offsets has the
+    minutes to add to each prayer (#12). Raises ConfigError if a time cannot
+    be calculated.
     """
-    times = PrayTimes(method).getTimes((date.year, date.month, date.day),
-                                       (lat, lon), utcOffset)
+    calculator = PrayTimes(method)
+    if offsets:
+        # PrayTimes adds the offsets before it rounds to the minute
+        calculator.tune(offsets)
+    times = calculator.getTimes((date.year, date.month, date.day), (lat, lon), utcOffset)
 
     # PrayTimes returns '-----' when a time cannot be calculated, which happens
     # at extreme latitudes. Stop before rescheduling anything rather than
@@ -311,6 +347,7 @@ def saveSettings(config, args, settings, file_path):
         config["FRIDAY"] = {"playSurahBaqarah": str(settings.surah_baqarah),
                             "surahVolume": str(settings.surah_volume)}
     config["PLAYER"] = {"player": settings.player}
+    config["OFFSETS"] = {name: str(settings.offsets[name]) for name in PRAYERS}
 
     with open(file_path, 'w') as configfile:
         config.write(configfile)
@@ -452,7 +489,8 @@ def main(argv=None, settings_path=None, cron=None, today=None, utcOffset=None,
         checkPlayer(settings.player)
         # Calculate the times before the save too, so a location where a time
         # cannot be calculated is not saved for the nightly update (#31)
-        times = prayerTimes(settings.lat, settings.lon, settings.method, today, utcOffset)
+        times = prayerTimes(settings.lat, settings.lon, settings.method, today, utcOffset,
+                            settings.offsets)
         saveSettings(config, args, settings, settings_path)
     except ConfigError as err:
         log(err)
@@ -467,11 +505,10 @@ def main(argv=None, settings_path=None, cron=None, today=None, utcOffset=None,
     log("---------------------------------")
     log("Prayer Times")
     log("---------------------------------")
-    log(f"Fajr:    {times['fajr']} hrs")
-    log(f"Dhuhr:   {times['dhuhr']} hrs")
-    log(f"Asr:     {times['asr']} hrs")
-    log(f"Maghrib: {times['maghrib']} hrs")
-    log(f"Isha:    {times['isha']} hrs")
+    for name in PRAYERS:
+        offset = settings.offsets[name]
+        note = f" (offset {offset:+d} minutes)" if offset else ""
+        log(f"{name.capitalize() + ':':<9}{times[name]} hrs{note}")
     log("---------------------------------")
 
     # Add times to crontab

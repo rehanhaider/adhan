@@ -126,7 +126,6 @@ class PrayTimes():
 	invalidTime =  '-----'
 
 	numIterations = 1
-	offset = {}
 
 
 	#---------------------- Initialization -----------------------
@@ -145,9 +144,8 @@ class PrayTimes():
 		for name, value in params.items():
 			self.settings[name] = value
 
-		# init time offsets
-		for name in self.timeNames:
-			self.offset[name] = 0
+		# init time offsets, for this object only
+		self.offset = {name: 0 for name in self.timeNames}
 
 
 	#-------------------- Interface Functions --------------------
@@ -161,7 +159,7 @@ class PrayTimes():
 		self.settings.update(params)
 
 	def tune(self, timeOffsets):
-		self.offsets.update(timeOffsets)
+		self.offset.update(timeOffsets)
 
 	def getMethod(self):
 		return self.calcMethod
