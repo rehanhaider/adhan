@@ -57,7 +57,7 @@ class PlayAzaanTest(unittest.TestCase):
         """C6: cvlc exits after the file (#4), at the gain of the millibels."""
         args_log = self.fakeCvlc()
         # 10 ** (millibels / 2000), with 4 decimals
-        for volume, gain in (('0', '1.0000'), ('1500', '5.6234')):
+        for volume, gain in (('0', '1.0000'), ('1500', '5.6234'), ('-2000', '0.1000')):
             with self.subTest(volume=volume):
                 if os.path.exists(self.events):
                     os.remove(self.events)
@@ -68,6 +68,18 @@ class PlayAzaanTest(unittest.TestCase):
                     self.assertEqual(fh.read().split('\n')[:-1],
                                      ['--play-and-exit', '--gain', gain,
                                       self.audio, 'vlc://quit'])
+
+    def test_paplay_plays_the_file_once_at_nominal_volume(self):
+        """C6: the paplay player gets the file and the volume, and its exit
+        code is the exit code of the script."""
+        args_log = fakes.fakePlayer(self.bin, 'paplay', self.events, exit_code=3)
+        # Volume 0 is a gain of 1, which is the nominal PulseAudio volume 65536
+        result = self.run_play(self.audio, '0', 'paplay')
+        self.assertEqual(result.returncode, 3, result.stdout + result.stderr)
+        self.assertEqual(self.events_seen(), ['paplay'])
+        with open(args_log) as fh:
+            self.assertEqual(fh.read().split('\n')[:-1],
+                             ['--volume=65536', self.audio])
 
     def test_exit_code_is_the_exit_code_of_the_player(self):
         """C6: a failure of the player shows in the exit code, after the

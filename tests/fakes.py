@@ -65,10 +65,10 @@ else:
     shutil.copyfile(sys.argv[-1], tab)
 '''
 
-FAKE_CVLC = '''#!/bin/sh
-# Fake cvlc: records its arguments, one per line, and plays nothing
+FAKE_PLAYER = '''#!/bin/sh
+# Fake {name}: records its arguments, one per line, and plays nothing
 for arg in "$@"; do echo "$arg"; done > "{log}"
-echo cvlc >> "{events}"
+echo {name} >> "{events}"
 exit {exit_code}
 '''
 
@@ -114,15 +114,20 @@ def tempDir(test):
     return path
 
 
-def fakeCvlc(bin_dir, events, exit_code=0):
-    """Put a fake cvlc in bin_dir that adds 'cvlc' to the events file.
+def fakePlayer(bin_dir, name, events, exit_code=0):
+    """Put a fake player in bin_dir that adds its name to the events file.
 
     Returns the file that it records its arguments in.
     """
-    log = pathjoin(bin_dir, 'cvlc.args')
-    writeExecutable(pathjoin(bin_dir, 'cvlc'),
-                    FAKE_CVLC.format(log=log, events=events, exit_code=exit_code))
+    log = pathjoin(bin_dir, f'{name}.args')
+    writeExecutable(pathjoin(bin_dir, name),
+                    FAKE_PLAYER.format(name=name, log=log, events=events,
+                                       exit_code=exit_code))
     return log
+
+
+def fakeCvlc(bin_dir, events, exit_code=0):
+    return fakePlayer(bin_dir, 'cvlc', events, exit_code)
 
 
 class App:
