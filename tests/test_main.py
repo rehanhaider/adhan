@@ -182,15 +182,18 @@ class LogTest(FakesTestCase):
 
     def test_a_log_with_a_problem_does_not_stop_the_update(self):
         """C3: a log that is missing or cannot be read does not stop the
-        schedule."""
+        schedule. Cron can still add to a log that it cannot read (>> needs
+        only write), so the update runs and must not fail on the prune."""
         def missing():
             pass
 
-        def a_folder():
-            os.mkdir(self.log_path)
-            self.addCleanup(os.rmdir, self.log_path)
+        def write_only():
+            self.writeLog(self.OLD + self.NEW)
+            os.chmod(self.log_path, 0o200)
+            if os.access(self.log_path, os.R_OK):
+                self.skipTest('root can read a write-only file')
 
-        for name, make in (('missing', missing), ('a folder', a_folder)):
+        for name, make in (('missing', missing), ('cannot be read', write_only)):
             with self.subTest(name):
                 make()
                 cron = CronTab(tab='')
