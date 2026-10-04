@@ -15,7 +15,8 @@ PRAYERS = ('fajr', 'dhuhr', 'asr', 'maghrib', 'isha')
 
 # Expected times come from an independent source, not from this code: the
 # Aladhan prayer times API, read on 2026-10-04 with school=0 (Standard Asr) and
-# these queries to https://api.aladhan.com/v1/timings/<query>:
+# these queries to https://api.aladhan.com/v1/timings/<query>. HANAFI_ASR is
+# the first query with school=1 (Hanafi Asr).
 #   15-01-2026?latitude=12.8369&longitude=77.4089&method=1&timezonestring=Asia/Kolkata
 #   21-06-2026?latitude=59.9139&longitude=10.7522&method=3&latitudeAdjustmentMethod=1&timezonestring=Europe/Oslo
 #   01-07-2026?latitude=51.5074&longitude=-0.1278&method=3&latitudeAdjustmentMethod=1&timezonestring=Europe/London
@@ -42,7 +43,8 @@ ROOT = '/opt/adhan'
 NO_OFFSETS = dict.fromkeys(PRAYERS, 0)
 ALL_ON = dict.fromkeys(PRAYERS, True)
 DEFAULT_AUDIO = {'default': 'Adhan-Makkah1.mp3', 'fajr': 'Adhan-fajr.mp3'}
-SETTINGS = app.Settings(lat=12.8369, lon=77.4089, method='Karachi',
+HANAFI_ASR = '16:37'
+SETTINGS = app.Settings(lat=12.8369, lon=77.4089, method='Karachi', asr='Standard',
                         default_azaan_vol=500, fajr_azaan_vol=-500,
                         surah_baqarah=False, surah_volume=300,
                         player='paplay', offsets=NO_OFFSETS, enabled=ALL_ON,
@@ -123,6 +125,18 @@ class PrayerTimesTest(unittest.TestCase):
         args = ((2026, 1, 15), (12.8369, 77.4089), 5.5)
         self.assertEqual(tuned.getTimes(*args)['fajr'], '05:36')
         self.assertEqual(other.getTimes(*args)['fajr'], '05:31')
+
+    def test_hanafi_asr_matches_an_independent_source(self):
+        """C1: Hanafi moves Asr only (#11). A Hanafi calculation does not
+        change the next Standard one: PrayTimes keeps its settings in the class."""
+        args = (12.8369, 77.4089, 'Karachi', datetime.date(2026, 1, 15), 5.5)
+        standard = app.prayerTimes(*args)
+        hanafi = app.prayerTimes(*args, asr='Hanafi')
+        diff = abs(minutes(hanafi['asr']) - minutes(HANAFI_ASR))
+        self.assertLessEqual(diff, 1, f"asr {hanafi['asr']}, expected {HANAFI_ASR}")
+        self.assertEqual(dict(hanafi, asr=standard['asr']), standard)
+        self.assertEqual(app.prayerTimes(*args), standard)
+        self.assertEqual(app.prayerTimes(*args, asr='Standard'), standard)
 
     def test_praytimes_starts_with_mwl(self):
         """C1: PrayTimes() without a method uses MWL, not Jafari (#26)."""
@@ -295,6 +309,14 @@ class ResolveSettingsTest(unittest.TestCase):
                          'asr': 'Adhan-Makkah1-Dua.mp3', 'isha': 'y.mp3'})),
             ('the default audio files are the files of today (#10)', (), only_location,
              dict(audio=DEFAULT_AUDIO)),
+            ('the stored asr is used, hanafi is accepted as Hanafi (#11)', (),
+             STORED.replace('method = ISNA\n', 'method = ISNA\nasr = hanafi\n'),
+             dict(asr='Hanafi')),
+            ('asr on the command line wins, in any case (#11)', ('--asr', 'STANDARD'),
+             STORED.replace('method = ISNA\n', 'method = ISNA\nasr = Hanafi\n'),
+             dict(asr='Standard')),
+            ('the default asr is Standard (#11)', (), only_location,
+             dict(asr='Standard')),
             ('a prayer in [DEFAULT] is not an audio file (#10)', (),
              STORED.replace('[DEFAULT]\n', '[DEFAULT]\nfajr = x.mp3\n') + '[AUDIO]\n',
              dict(audio=DEFAULT_AUDIO)),
@@ -331,6 +353,10 @@ class ResolveSettingsTest(unittest.TestCase):
             ('on or off is maybe (#13)', (), STORED + '[ENABLED]\nfajr = maybe\n'),
             ('on or off with no value (#13)', (), STORED + '[ENABLED]\nisha =\n'),
             ('on or off of an unknown prayer, a typo (#13)', (), STORED + '[ENABLED]\nfjar = false\n'),
+            ('unknown asr Shafii (#11)', (),
+             STORED.replace('method = ISNA\n', 'method = ISNA\nasr = Shafii\n')),
+            ('asr with no value (#11)', (),
+             STORED.replace('method = ISNA\n', 'method = ISNA\nasr =\n')),
             ('audio file of an unknown prayer, a typo (#10)', (), STORED + '[AUDIO]\nfjar = x.mp3\n'),
             ('audio file with no value (#10)', (), STORED + '[AUDIO]\nfajr =\n'),
             ('audio file with %, which cron changes (#10)', (), STORED + '[AUDIO]\nisha = 100%.mp3\n'),
