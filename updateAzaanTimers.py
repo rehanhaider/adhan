@@ -37,6 +37,12 @@ DEFAULT_ASR = 'Standard'
 
 PRAYERS = ('fajr', 'dhuhr', 'asr', 'maghrib', 'isha')
 
+# Seconds of silence that playAzaan.sh plays before the adhan, so that a
+# speaker that is slow to wake up does not lose the start of it (#14). 0 adds
+# no silence. More than MAX_LEADIN is probably a typo, and delays the adhan.
+DEFAULT_LEADIN = 0
+MAX_LEADIN = 10
+
 # The adhan files when settings.ini does not give one (#10). 'default' is for
 # dhuhr, asr, maghrib and isha when they have no file of their own. Fajr
 # always has its own file, so that a settings.ini without [AUDIO] keeps the
@@ -70,6 +76,7 @@ class ConfigError(Exception):
 Settings = namedtuple('Settings', [
     'lat', 'lon', 'method', 'asr', 'default_azaan_vol', 'fajr_azaan_vol',
     'surah_baqarah', 'surah_volume', 'player',
+    'leadin',  # seconds of silence before each adhan
     'offsets',  # minutes to add to each prayer time, by prayer name
     'enabled',  # True for each prayer that has a job, by prayer name
     'audio',  # 'default' and the prayers that have their own file, see audioFile()
@@ -99,6 +106,9 @@ def parseArgs():
                         help='Volume for fajr azaan in millibels, 1500 is loud and -30000 is quiet (default 0)')
     parser.add_argument('--player', choices=sorted(SUPPORTED_PLAYERS), dest='player',
                         help=f'Program used to play the adhan (default {DEFAULT_PLAYER})')
+    parser.add_argument('--leadin-seconds', type=int, dest='leadin', metavar='SECONDS',
+                        help='Seconds of silence before the adhan, so that a slow speaker '
+                             f'is awake when it starts, 0 to {MAX_LEADIN} (default {DEFAULT_LEADIN})')
     for name in PRAYERS:
         parser.add_argument(f'--{name}-offset', type=int, dest=f'{name}_offset', metavar='MINUTES',
                             help=f'Minutes to add to the {name} time, may be negative (default 0)')
@@ -177,12 +187,14 @@ def resolveSettings(args, stored):
         raise ConfigError(f"Unsupported player '{player}' in settings.ini, "
                           f"use one of: {', '.join(sorted(SUPPORTED_PLAYERS))}")
 
+    leadin = readLeadin(args, stored)
     offsets = readOffsets(args, stored)
     enabled = readEnabled(args, stored)
     audio = readAudio(args, stored)
 
     return Settings(lat, lon, method, asr, default_azaan_vol, fajr_azaan_vol,
-                    surahBaqarah, surahVolume, player, offsets, enabled, audio, warnings)
+                    surahBaqarah, surahVolume, player, leadin, offsets, enabled, audio,
+                    warnings)
 
 
 def checkCoordinate(name, value, limit):
@@ -226,6 +238,24 @@ def checkAsr(asr):
   if name is None:
     raise ConfigError(f"Unsupported asr '{asr}', use one of: {', '.join(SUPPORTED_ASR)}")
   return name
+
+
+def readLeadin(args, config):
+  # The seconds of silence before the adhan (#14), from the command line, then
+  # [PLAYER] in settings.ini, then DEFAULT_LEADIN. Stop on a value that is not
+  # a whole number from 0 to MAX_LEADIN.
+  if args.leadin is not None:
+    value = args.leadin
+  else:
+    value = config.get('PLAYER', 'leadin_seconds', fallback=str(DEFAULT_LEADIN))
+  try:
+    leadin = int(value)
+  except ValueError:
+    leadin = None
+  if leadin is None or not 0 <= leadin <= MAX_LEADIN:
+    raise ConfigError(f"Invalid lead-in '{value}', use a whole number of seconds "
+                      f"from 0 to {MAX_LEADIN}")
+  return leadin
 
 
 def prayerSection(config, name, other_keys=()):
@@ -355,9 +385,13 @@ def buildJobs(times, settings, root_dir):
     strPlayer = f"{root_dir}/playAzaan.sh"
     strLog = f">> {root_dir}/adhan.log 2>&1"
 
+    # Give the lead-in only when there is one, so that the jobs of an install
+    # without a lead-in do not change (#14)
+    leadin = f" {settings.leadin}" if settings.leadin else ""
+
     def play(path, volume):
         # quote, so that a path with a space is one argument
-        return f"{strPlayer} {shlex.quote(path)} {volume} {settings.player} {strLog}"
+        return f"{strPlayer} {shlex.quote(path)} {volume} {settings.player}{leadin} {strLog}"
 
     jobs = []
     for name in PRAYERS:
@@ -470,7 +504,7 @@ def saveSettings(config, args, settings, file_path):
     except (KeyError, ValueError):
         config["FRIDAY"] = {"playSurahBaqarah": str(settings.surah_baqarah),
                             "surahVolume": str(settings.surah_volume)}
-    config["PLAYER"] = {"player": settings.player}
+    config["PLAYER"] = {"player": settings.player, "leadin_seconds": str(settings.leadin)}
     config["OFFSETS"] = {name: str(settings.offsets[name]) for name in PRAYERS}
     config["ENABLED"] = {name: str(settings.enabled[name]).lower() for name in PRAYERS}
     config["AUDIO"] = settings.audio
@@ -626,7 +660,7 @@ def main(argv=None, settings_path=None, cron=None, today=None, utcOffset=None,
     log("---------------------------------")
     log("Co-ordinates provided")
     log("---------------------------------")
-    log(f"Latitude:   {settings.lat} \nLongitude:  {settings.lon} \nMethod:     {settings.method} \nAsr school: {settings.asr} \nPlayer:     {settings.player}")
+    log(f"Latitude:   {settings.lat} \nLongitude:  {settings.lon} \nMethod:     {settings.method} \nAsr school: {settings.asr} \nPlayer:     {settings.player} \nLead-in:    {settings.leadin} seconds")
     log("---------------------------------")
     log()
     log("---------------------------------")

@@ -118,6 +118,12 @@ class MainTest(FakesTestCase):
         self.assertEqual(hanafi.render(), audio.render().replace('47 15 * * * ', '37 16 * * * '))
         self.assertIn('Asr school: Hanafi', self.output.getvalue())
         self.assertIn(b'asr = Hanafi', self.settings())
+        # A lead-in in settings.ini goes to each adhan job, and the log shows it (#14)
+        self.writeSettings(self.settings().replace(b'leadin_seconds = 0', b'leadin_seconds = 2'))
+        leadin = CronTab(tab='')
+        self.assertEqual(self.runMain(cron=leadin), 0)
+        self.assertEqual(leadin.render(), hanafi.render().replace(' vlc >> ', ' vlc 2 >> '))
+        self.assertIn('Lead-in:    2 seconds', self.output.getvalue())
 
     def test_second_run_replaces_our_jobs_and_keeps_the_users(self):
         """C3: a second run does not add jobs, and other jobs stay. The old
@@ -163,6 +169,10 @@ class MainTest(FakesTestCase):
             ('unknown asr Maliki (#11)', (),
              good.replace('asr = Standard', 'asr = Maliki')),
             ('unknown asr on the command line (#11)', ('--asr', 'Maliki'), good),
+            ('lead-in not a whole number (#14)', (),
+             good.replace('leadin_seconds = 0', 'leadin_seconds = 1.5')),
+            ('lead-in more than 10 seconds on the command line (#14)',
+             ('--leadin-seconds', '11'), good),
             ('audio file not in media/ (#10)', (),
              good.replace('fajr = Adhan-fajr.mp3', 'fajr = Adhan-fjar.mp3')),
             ('audio file not in media/, on the command line (#10)',

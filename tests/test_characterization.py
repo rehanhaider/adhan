@@ -38,6 +38,7 @@ surahvolume = 0
 
 [PLAYER]
 player = vlc
+leadin_seconds = 0
 
 [OFFSETS]
 fajr = 0
