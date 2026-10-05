@@ -36,6 +36,9 @@ class PlayAzaanTest(unittest.TestCase):
         self.events = pathjoin(self.root, 'events')
         self.audio = pathjoin(self.root, 'adhan.mp3')
         open(self.audio, 'w').close()
+        os.mkdir(pathjoin(self.root, 'media'))
+        self.silence = pathjoin(self.root, 'media', 'silence-1s.wav')
+        open(self.silence, 'w').close()
 
     def fakeCvlc(self, exit_code=0):
         return fakes.fakeCvlc(self.bin, self.events, exit_code)
@@ -83,6 +86,58 @@ class PlayAzaanTest(unittest.TestCase):
         with open(args_log) as fh:
             self.assertEqual(fh.read().split('\n')[:-1],
                              ['--volume=65536', self.audio])
+
+    def test_vlc_plays_one_second_of_silence_for_each_second_of_leadin(self):
+        """C6: with a lead-in, cvlc plays the silent file that many times
+        before the adhan, in one process, so the speaker is awake when the
+        adhan starts (#14). A lead-in of 0 plays the adhan only."""
+        args_log = self.fakeCvlc()
+        for leadin, silence in (('2', [self.silence] * 2), ('0', [])):
+            with self.subTest(leadin=leadin):
+                if os.path.exists(self.events):
+                    os.remove(self.events)
+                result = self.run_play(self.audio, '0', 'vlc', leadin)
+                self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+                self.assertEqual(self.events_seen(), ['cvlc'])
+                with open(args_log) as fh:
+                    self.assertEqual(fh.read().split('\n')[:-1],
+                                     ['--play-and-exit', '--gain', '1.0000', *silence,
+                                      self.audio, 'vlc://quit'])
+
+    def test_paplay_plays_the_silence_before_the_adhan(self):
+        """C6: with a lead-in, paplay plays the silent file once for each
+        second, then the adhan. The exit code is the one of the adhan (#14)."""
+        calls = pathjoin(self.root, 'paplay.calls')
+        fakes.writeExecutable(pathjoin(self.bin, 'paplay'),
+                              f'#!/bin/sh\necho "$*" >> "{calls}"\n'
+                              f'[ "$1" = "{self.silence}" ] && exit 1\nexit 0\n')
+        result = self.run_play(self.audio, '0', 'paplay', '3')
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        with open(calls) as fh:
+            self.assertEqual(fh.read().splitlines(),
+                             [self.silence] * 3 + [f'--volume=65536 {self.audio}'])
+
+    def test_leadin_without_the_silent_file_still_plays_the_adhan(self):
+        """C6: if the silent file is not there, the adhan plays without the
+        lead-in, and the log says why (#14)."""
+        args_log = self.fakeCvlc()
+        os.remove(self.silence)
+        result = self.run_play(self.audio, '0', 'vlc', '2')
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        with open(args_log) as fh:
+            self.assertEqual(fh.read().split('\n')[:-1],
+                             ['--play-and-exit', '--gain', '1.0000', self.audio, 'vlc://quit'])
+        self.assertIn('silence-1s.wav', result.stdout)
+
+    def test_bad_leadin_exits_before_any_hook(self):
+        """C6: a lead-in that is not a whole number of seconds exits 1 and
+        runs no hook and no player (#14)."""
+        self.fakeCvlc()
+        self.hook('before-hooks.d', '10-hook', f'echo before >> {self.events}')
+        for leadin in ('two', '-1', '1.5', ''):
+            with self.subTest(leadin=leadin):
+                self.assertEqual(self.run_play(self.audio, '0', 'vlc', leadin).returncode, 1)
+                self.assertEqual(self.events_seen(), [])
 
     def test_exit_code_is_the_exit_code_of_the_player(self):
         """C6: a failure of the player shows in the exit code, after the

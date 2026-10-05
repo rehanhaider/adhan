@@ -47,7 +47,7 @@ HANAFI_ASR = '16:37'
 SETTINGS = app.Settings(lat=12.8369, lon=77.4089, method='Karachi', asr='Standard',
                         default_azaan_vol=500, fajr_azaan_vol=-500,
                         surah_baqarah=False, surah_volume=300,
-                        player='paplay', offsets=NO_OFFSETS, enabled=ALL_ON,
+                        player='paplay', leadin=0, offsets=NO_OFFSETS, enabled=ALL_ON,
                         audio=DEFAULT_AUDIO, warnings=[])
 
 STORED = '''[DEFAULT]
@@ -212,6 +212,24 @@ class BuildJobsTest(unittest.TestCase):
         self.assertIn(REBOOT_JOB, jobs)
         self.assertEqual([job for job in jobs if 'truncate' in job.command], [])
 
+    def test_a_leadin_is_given_to_each_adhan_job(self):
+        """C2: a lead-in of more than 0 seconds is the last argument of each
+        job that plays, and the other jobs do not change. 0 gives the job of
+        before (#14)."""
+        log = f'>> {ROOT}/adhan.log 2>&1'
+        settings = SETTINGS._replace(leadin=2, surah_baqarah=True)
+        jobs = app.buildJobs(TIMES, settings, ROOT)
+        self.assertCountEqual(jobs, [
+            app.Job(5, 31, None, None,
+                    f'{ROOT}/playAzaan.sh {ROOT}/media/Adhan-fajr.mp3 -500 paplay 2 {log}'),
+            *[app.Job(int(TIMES[name][:2]), int(TIMES[name][3:]), None, None,
+                      f'{ROOT}/playAzaan.sh {ROOT}/media/Adhan-Makkah1.mp3 500 paplay 2 {log}')
+              for name in PRAYERS[1:]],
+            app.Job(7, 0, None, 5,
+                    f'{ROOT}/playAzaan.sh {ROOT}/media/002-surah-baqarah-mishary.mp3 '
+                    f'300 paplay 2 {log}'),
+            UPDATE_JOB, REBOOT_JOB])
+
 
 class PruneLogTest(unittest.TestCase):
 
@@ -317,6 +335,17 @@ class ResolveSettingsTest(unittest.TestCase):
              dict(asr='Standard')),
             ('the default asr is Standard (#11)', (), only_location,
              dict(asr='Standard')),
+            ('the stored lead-in is used (#14)', (),
+             STORED + 'leadin_seconds = 2\n',
+             dict(leadin=2)),
+            ('the lead-in on the command line wins (#14)', ('--leadin-seconds', '10'),
+             STORED + 'leadin_seconds = 2\n',
+             dict(leadin=10)),
+            ('0 on the command line is a lead-in (#14)', ('--leadin-seconds', '0'),
+             STORED + 'leadin_seconds = 2\n',
+             dict(leadin=0)),
+            ('the default lead-in is 0 (#14)', (), only_location,
+             dict(leadin=0)),
             ('a prayer in [DEFAULT] is not an audio file (#10)', (),
              STORED.replace('[DEFAULT]\n', '[DEFAULT]\nfajr = x.mp3\n') + '[AUDIO]\n',
              dict(audio=DEFAULT_AUDIO)),
@@ -357,6 +386,12 @@ class ResolveSettingsTest(unittest.TestCase):
              STORED.replace('method = ISNA\n', 'method = ISNA\nasr = Shafii\n')),
             ('asr with no value (#11)', (),
              STORED.replace('method = ISNA\n', 'method = ISNA\nasr =\n')),
+            ('lead-in -1 (#14)', (), STORED + 'leadin_seconds = -1\n'),
+            ('lead-in 1.5 is not a whole number (#14)', (), STORED + 'leadin_seconds = 1.5\n'),
+            ('lead-in two is not a number (#14)', (), STORED + 'leadin_seconds = two\n'),
+            ('lead-in with no value (#14)', (), STORED + 'leadin_seconds =\n'),
+            ('lead-in 11, more than 10 seconds (#14)', ('--leadin-seconds', '11'), STORED),
+            ('lead-in -1 on the command line (#14)', ('--leadin-seconds', '-1'), STORED),
             ('audio file of an unknown prayer, a typo (#10)', (), STORED + '[AUDIO]\nfjar = x.mp3\n'),
             ('audio file with no value (#10)', (), STORED + '[AUDIO]\nfajr =\n'),
             ('audio file with %, which cron changes (#10)', (), STORED + '[AUDIO]\nisha = 100%.mp3\n'),
