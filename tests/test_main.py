@@ -28,6 +28,10 @@ FIRST_RUN = ('--lat', '12.8369', '--lon', '77.4089', '--method', 'Karachi',
 # The [prayers.fajr] table that the first run writes
 FAJR = ('[prayers.fajr]\nfile = "Adhan-fajr.mp3"\nvolume = 0\noffset_minutes = 0\n'
         'enabled = true\n')
+# The rule of the README for Surah Baqarah, and a rule after Maghrib (#43)
+SURAH_BAQARAH = ('[[rule]]\nname = "Surah Baqarah"\ndays = ["fri"]\nat = "07:00"\n'
+                 'file = "002-surah-baqarah-mishary.mp3"\nvolume = -100\n')
+DUA = '[[rule]]\nname = "Evening dua"\nat = "maghrib + 10min"\nfile = "Adhan-Makkah1-Dua.mp3"\n'
 
 
 class FakesTestCase(unittest.TestCase):
@@ -139,15 +143,20 @@ class MainTest(FakesTestCase):
         self.assertEqual(volume.render(), ''.join(
             line.replace(' 500 vlc ', ' -300 vlc ') if line.startswith('30 12 ')
             else line for line in leadin.render().splitlines(keepends=True)))
-        # Surah Baqarah in adhan.toml adds the job on Friday at 07:00 (#9)
-        self.editSettings('[surah_baqarah]\nenabled = false\nvolume = 0\n',
-                          '[surah_baqarah]\nenabled = true\nvolume = -100\n')
-        surah = CronTab(tab='')
-        self.assertEqual(self.runMain(cron=surah), 0)
-        friday = [line for line in surah.render().splitlines() if line.startswith('0 7 * * 5 ')]
+        # A rule in adhan.toml adds one job on its days, with the lead-in, and
+        # the nightly update keeps it (#43)
+        self.writeSettings(self.settings() + b'\n' + SURAH_BAQARAH.encode())
+        rule = CronTab(tab='')
+        self.assertEqual(self.runMain(cron=rule), 0)
+        friday = [line for line in rule.render().splitlines() if line.startswith('0 7 * * 5 ')]
         self.assertEqual(len(friday), 1)
         self.assertIn('/media/002-surah-baqarah-mishary.mp3 -100 vlc 2 >> ', friday[0])
-        self.assertEqual(surah.render().replace(friday[0] + '\n', ''), volume.render())
+        self.assertEqual(rule.render().replace(friday[0] + '\n', ''), volume.render())
+        self.assertIn('Surah Baqarah: 07:00, on fri', self.output.getvalue())
+        self.assertIn((SURAH_BAQARAH + 'enabled = true\n').encode(), self.settings())
+        nightly = CronTab(tab='')
+        self.assertEqual(self.runMain(cron=nightly), 0)
+        self.assertEqual(nightly.render(), rule.render())
 
     def test_second_run_replaces_our_jobs_and_keeps_the_users(self):
         """C3: a second run does not add jobs, and other jobs stay. The old
@@ -155,10 +164,15 @@ class MainTest(FakesTestCase):
         one after a reboot (#15)."""
         cron = CronTab(tab=f'{USER_JOB}\n{OLD_CLEAR_LOG_JOB}\n')
         self.assertEqual(self.runMain(*FIRST_RUN, cron=cron), 0)
+        # With two rules, each run has 5 adhan jobs and 2 rule jobs (#43)
+        self.writeSettings(self.settings() + f'\n{SURAH_BAQARAH}\n{DUA}'.encode())
+        self.assertEqual(self.runMain(cron=cron), 0)
         self.assertEqual(self.runMain(cron=cron), 0)
         lines = cron.render().splitlines()
         self.assertIn(USER_JOB, lines)
-        self.assertEqual(len([line for line in lines if 'playAzaan.sh' in line]), 5)
+        self.assertEqual(len([line for line in lines if 'playAzaan.sh' in line]), 7)
+        self.assertEqual(len([line for line in lines if line.startswith('0 7 * * 5 ')]), 1)
+        self.assertEqual(len([line for line in lines if line.startswith('23 18 * * * ')]), 1)
         updates = [line for line in lines if 'updateAzaanTimers.py' in line]
         self.assertEqual([line.split()[0] for line in updates], ['15', '@reboot'])
         for line in updates:
@@ -173,6 +187,11 @@ class MainTest(FakesTestCase):
 
         def fajr(old, new):
             return good.replace(FAJR, FAJR.replace(old, new))
+
+        def rule(old, new):
+            # good with the rule DUA, changed
+            self.assertIn(old, DUA)
+            return good + '\n' + DUA.replace(old, new)
 
         cases = [
             ('latitude nan', ('--lat', 'nan'), good),
@@ -194,8 +213,21 @@ class MainTest(FakesTestCase):
             ('unknown key, a typo', (), good.replace('lat = 12.8369', 'latt = 12.8369')),
             ('latitude as text', (), good.replace('lat = 12.8369', 'lat = "12.8369"')),
             ('volume not a whole number', (), good.replace('volume = 500', 'volume = 500.0')),
-            ('Surah Baqarah on as text (#9)', (),
-             good.replace('[surah_baqarah]\nenabled = false', '[surah_baqarah]\nenabled = "no"')),
+            ('the old [surah_baqarah] table (#43)', (),
+             good + '\n[surah_baqarah]\nenabled = true\nvolume = 0\n'),
+            ('[rule] as one table, not [[rule]] (#43)', (), rule('[[rule]]', '[rule]')),
+            ('unknown key in a rule (#43)', (), rule('at =', 'time =')),
+            ('a rule without at (#43)', (), rule('at = "maghrib + 10min"\n', '')),
+            ('volume of a rule as text (#43)', (), rule('name =', 'volume = "0"\nname =')),
+            ('days as text, not a list (#43)', (), rule('name =', 'days = "fri"\nname =')),
+            ('at not a time (#43)', (), rule('"maghrib + 10min"', '"7 am"')),
+            ('at an unknown prayer (#43)', (), rule('"maghrib + 10min"', '"magrib + 10min"')),
+            ('an unknown day (#43)', (), rule('name =', 'days = ["friday"]\nname =')),
+            ('two rules with the same name (#43)', (), rule('', '') + '\n' + DUA),
+            ('the file of a rule not in media/ (#43)', (),
+             rule('"Adhan-Makkah1-Dua.mp3"', '"dua.mp3"')),
+            ('a rule after 23:59 (#43)', (), rule('"maghrib + 10min"', '"maghrib + 400min"')),
+            ('a rule before 00:00 (#43)', (), rule('"maghrib + 10min"', '"fajr - 332min"')),
             ('offset not a whole number (#12)', (),
              fajr('offset_minutes = 0', 'offset_minutes = 5.5')),
             ('offset of an unknown prayer (#12)', (),
@@ -226,22 +258,55 @@ class MainTest(FakesTestCase):
                 self.assertEqual(cron.render(), crontab)
                 self.assertEqual(self.settings(), data)
 
-    def test_a_missing_surah_baqarah_file_stops_the_update(self):
-        """C4: with Surah Baqarah on, its file must be there, as an adhan
-        file must be (#9, #10). With Surah Baqarah off, it is not checked."""
+    def test_a_missing_rule_file_stops_the_update(self):
+        """C4: the file of a rule that is on must be there, as an adhan file
+        must be (#10, #43), in media/ or at an absolute path. The file of a
+        rule that is off is not checked."""
+        rule = app.Rule('Surah Baqarah', app.At(None, 7 * 60), ('fri',),
+                        '002-surah-baqarah-mishary.mp3', None, True)
         settings = app.Settings(lat=12.8369, lon=77.4089, method='Karachi', asr='Standard',
-                                volume={'default': 0, 'fajr': 0},
-                                surah_baqarah=True, surah_volume=0, player='vlc', leadin=0,
+                                volume={'default': 0, 'fajr': 0}, player='vlc', leadin=0,
                                 offsets=dict.fromkeys(app.PRAYERS, 0),
                                 enabled=dict.fromkeys(app.PRAYERS, False),
-                                audio={'default': 'Adhan-Makkah1.mp3'})
+                                audio={'default': 'Adhan-Makkah1.mp3'}, rules=(rule,))
         root = fakes.tempDir(self)
         os.mkdir(pathjoin(root, 'media'))
-        with self.assertRaises(app.ConfigError):
+        with self.assertRaises(app.ConfigError) as error:
             app.checkAudio(settings, root)
-        app.checkAudio(settings._replace(surah_baqarah=False), root)
+        self.assertIn("the rule 'Surah Baqarah'", str(error.exception))
+        app.checkAudio(settings._replace(rules=(rule._replace(enabled=False),)), root)
         open(pathjoin(root, 'media', '002-surah-baqarah-mishary.mp3'), 'w').close()
         app.checkAudio(settings, root)
+        own = pathjoin(root, 'own.mp3')
+        with self.assertRaises(app.ConfigError):
+            app.checkAudio(settings._replace(rules=(rule._replace(file=own),)), root)
+        open(own, 'w').close()
+        app.checkAudio(settings._replace(rules=(rule._replace(file=own),)), root)
+
+    def test_the_old_surah_baqarah_table_says_which_rule_to_add(self):
+        """C4: the live adhan.toml of before #43 has [surah_baqarah] on.
+        The update stops, the log gives the rule, and with that rule in place
+        of the table the update gives the Friday job of before #43."""
+        cron = CronTab(tab=USER_JOB + '\n')
+        self.assertEqual(self.runMain(*FIRST_RUN, cron=cron), 0)
+        good = self.settings().decode()
+        self.writeSettings((good + '\n[surah_baqarah]\nenabled = true\nvolume = 0\n').encode())
+        before = cron.render()
+        self.assertNotEqual(self.runMain(cron=cron), 0)
+        self.assertEqual(cron.render(), before)
+        output = self.output.getvalue()
+        self.assertIn('replace the [surah_baqarah] table with this rule', output)
+        rule = ('[[rule]]\nname = "Surah Baqarah"\ndays = ["fri"]\nat = "07:00"\n'
+                'file = "002-surah-baqarah-mishary.mp3"\nvolume = 0\n')
+        self.assertIn(''.join(f' {line}\n' for line in rule.splitlines()),
+                      ''.join(line[19:] + '\n' for line in output.splitlines()))
+        self.writeSettings((good + '\n' + rule).encode())
+        self.assertEqual(self.runMain(cron=cron), 0)
+        friday = [line for line in cron.render().splitlines() if line.startswith('0 7 * * 5 ')]
+        self.assertEqual(len(friday), 1)
+        self.assertTrue(friday[0].endswith(
+            '/media/002-surah-baqarah-mishary.mp3 0 vlc >> '
+            f'{app.root_dir}/adhan.log 2>&1 # rpiAdhanClockJob'), friday[0])
 
     def test_all_prayers_off_is_allowed_and_logged(self):
         """C2, C3: with all five prayers off, no adhan job stays, the jobs that
