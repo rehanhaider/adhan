@@ -39,8 +39,11 @@ FIXED_TIMES = [
      datetime.date(2026, 1, 15), 0, ('05:59', '12:10', '14:00', '16:21', '18:15')),
 ]
 
-TIMES = {'fajr': '05:31', 'dhuhr': '12:30', 'asr': '15:47',
+# The sunrise is from the same Aladhan query as the first row of FIXED_TIMES
+TIMES = {'fajr': '05:31', 'sunrise': '06:46', 'dhuhr': '12:30', 'asr': '15:47',
          'maghrib': '18:13', 'isha': '19:28'}
+# The date of TIMES, a Thursday
+DATE = datetime.date(2026, 1, 15)
 ROOT = '/opt/adhan'
 NO_OFFSETS = dict.fromkeys(PRAYERS, 0)
 ALL_ON = dict.fromkeys(PRAYERS, True)
@@ -49,9 +52,14 @@ DEFAULT_VOLUME = {'default': 0, 'fajr': 0}
 HANAFI_ASR = '16:37'
 SETTINGS = app.Settings(lat=12.8369, lon=77.4089, method='Karachi', asr='Standard',
                         volume={'default': 500, 'fajr': -500},
-                        surah_baqarah=False, surah_volume=300,
                         player='paplay', leadin=0, offsets=NO_OFFSETS, enabled=ALL_ON,
-                        audio=DEFAULT_AUDIO)
+                        audio=DEFAULT_AUDIO, rules=())
+
+# The rule of the README that replaces the Friday job of before #43
+SURAH_BAQARAH = {'name': 'Surah Baqarah', 'days': ['fri'], 'at': '07:00',
+                 'file': '002-surah-baqarah-mishary.mp3', 'volume': 300}
+SURAH_BAQARAH_RULE = app.Rule('Surah Baqarah', app.At(None, 7 * 60), ('fri',),
+                              '002-surah-baqarah-mishary.mp3', 300, True)
 
 # adhan.toml as tomllib reads it
 STORED = {
@@ -60,6 +68,11 @@ STORED = {
     'prayers': {'fajr': {'volume': -700}},
 }
 ONLY_LOCATION = {'location': STORED['location']}
+
+# [[rule]] tables as tomllib reads them, the examples of #43
+KAHF = {'name': 'Surah Kahf', 'days': ['fri'], 'at': 'dhuhr - 30min', 'file': '018-kahf.mp3'}
+KAHF_RULE = app.Rule('Surah Kahf', app.At('dhuhr', -30), ('fri',), '018-kahf.mp3', None, True)
+DUA = {'name': 'Evening dua', 'at': 'maghrib + 10min', 'file': 'dua.mp3'}
 
 
 def minutes(hhmm):
@@ -152,37 +165,32 @@ class PrayerTimesTest(unittest.TestCase):
 class BuildJobsTest(unittest.TestCase):
 
     def test_one_job_per_prayer_with_its_file_and_volume(self):
-        """C2: Fajr has its own file and volume, Surah Baqarah only when on (#9)."""
-        prayer_jobs = [
+        """C2: Fajr has its own file and volume. With no rule, there is no
+        other job: the Friday job of before #43 is a rule now."""
+        jobs = app.buildJobs(TIMES, SETTINGS, ROOT, DATE)
+        self.assertCountEqual(jobs, [
             app.Job(5, 31, None, None, play('Adhan-fajr.mp3', -500)),
             app.Job(12, 30, None, None, play('Adhan-Makkah1.mp3', 500)),
             app.Job(15, 47, None, None, play('Adhan-Makkah1.mp3', 500)),
             app.Job(18, 13, None, None, play('Adhan-Makkah1.mp3', 500)),
             app.Job(19, 28, None, None, play('Adhan-Makkah1.mp3', 500)),
-        ]
-        friday = app.Job(7, 0, None, 5, play('002-surah-baqarah-mishary.mp3', 300))
-        for surah_baqarah, expected in ((False, prayer_jobs),
-                                        (True, prayer_jobs + [friday])):
-            with self.subTest(surah_baqarah=surah_baqarah):
-                settings = SETTINGS._replace(surah_baqarah=surah_baqarah)
-                jobs = app.buildJobs(TIMES, settings, ROOT)
-                self.assertCountEqual(jobs, expected + [UPDATE_JOB, REBOOT_JOB])
+            UPDATE_JOB, REBOOT_JOB])
 
     def test_a_prayer_that_is_off_has_no_job(self):
         """C2: a prayer that is off has no job, the others keep theirs (#13).
         With all five off, the jobs that renew the schedule stay."""
         settings = SETTINGS._replace(enabled=dict(ALL_ON, fajr=False, isha=False))
-        jobs = app.buildJobs(TIMES, settings, ROOT)
+        jobs = app.buildJobs(TIMES, settings, ROOT, DATE)
         self.assertCountEqual(jobs, [
             app.Job(12, 30, None, None, play('Adhan-Makkah1.mp3', 500)),
             app.Job(15, 47, None, None, play('Adhan-Makkah1.mp3', 500)),
             app.Job(18, 13, None, None, play('Adhan-Makkah1.mp3', 500)),
             UPDATE_JOB, REBOOT_JOB])
         settings = SETTINGS._replace(enabled=dict.fromkeys(PRAYERS, False),
-                                     surah_baqarah=True)
-        jobs = app.buildJobs(TIMES, settings, ROOT)
+                                     rules=(SURAH_BAQARAH_RULE,))
+        jobs = app.buildJobs(TIMES, settings, ROOT, DATE)
         self.assertCountEqual(jobs, [
-            app.Job(7, 0, None, 5, play('002-surah-baqarah-mishary.mp3', 300)),
+            app.Job(7, 0, None, (5,), play('002-surah-baqarah-mishary.mp3', 300)),
             UPDATE_JOB, REBOOT_JOB])
 
     def test_each_prayer_plays_its_audio_file(self):
@@ -191,7 +199,7 @@ class BuildJobsTest(unittest.TestCase):
         for the shell of cron (#10)."""
         audio = dict(DEFAULT_AUDIO, default='Adhan-Madinah.mp3', fajr='/home/me/fajr.mp3',
                      isha='My Adhan.mp3')
-        jobs = app.buildJobs(TIMES, SETTINGS._replace(audio=audio), ROOT)
+        jobs = app.buildJobs(TIMES, SETTINGS._replace(audio=audio), ROOT, DATE)
         log = f'>> {ROOT}/adhan.log 2>&1'
         self.assertCountEqual(jobs, [
             app.Job(5, 31, None, None,
@@ -208,7 +216,7 @@ class BuildJobsTest(unittest.TestCase):
         Fajr has its own default volume, so it does not change with the
         default volume."""
         volume = {'default': 500, 'fajr': -500, 'asr': -1000}
-        jobs = app.buildJobs(TIMES, SETTINGS._replace(volume=volume), ROOT)
+        jobs = app.buildJobs(TIMES, SETTINGS._replace(volume=volume), ROOT, DATE)
         self.assertCountEqual(jobs, [
             app.Job(5, 31, None, None, play('Adhan-fajr.mp3', -500)),
             app.Job(12, 30, None, None, play('Adhan-Makkah1.mp3', 500)),
@@ -220,14 +228,14 @@ class BuildJobsTest(unittest.TestCase):
     def test_edge_times_give_the_right_hour_and_minute(self):
         """C2: 00:05 and 23:59 become the right cron hour and minute."""
         times = dict(TIMES, fajr='00:05', isha='23:59')
-        jobs = app.buildJobs(times, SETTINGS, ROOT)
+        jobs = app.buildJobs(times, SETTINGS, ROOT, DATE)
         self.assertIn(app.Job(0, 5, None, None, play('Adhan-fajr.mp3', -500)), jobs)
         self.assertIn(app.Job(23, 59, None, None, play('Adhan-Makkah1.mp3', 500)), jobs)
 
     def test_schedule_renews_itself(self):
         """C3: a nightly update at 03:15, an update after each reboot that
         waits for the clock (#15), and no job that clears the log (#7)."""
-        jobs = app.buildJobs(TIMES, SETTINGS, ROOT)
+        jobs = app.buildJobs(TIMES, SETTINGS, ROOT, DATE)
         self.assertIn(UPDATE_JOB, jobs)
         self.assertIn(REBOOT_JOB, jobs)
         self.assertEqual([job for job in jobs if 'truncate' in job.command], [])
@@ -237,18 +245,207 @@ class BuildJobsTest(unittest.TestCase):
         job that plays, and the other jobs do not change. 0 gives the job of
         before (#14)."""
         log = f'>> {ROOT}/adhan.log 2>&1'
-        settings = SETTINGS._replace(leadin=2, surah_baqarah=True)
-        jobs = app.buildJobs(TIMES, settings, ROOT)
+        settings = SETTINGS._replace(leadin=2, rules=(SURAH_BAQARAH_RULE,))
+        jobs = app.buildJobs(TIMES, settings, ROOT, DATE)
         self.assertCountEqual(jobs, [
             app.Job(5, 31, None, None,
                     f'{ROOT}/playAzaan.sh {ROOT}/media/Adhan-fajr.mp3 -500 paplay 2 {log}'),
             *[app.Job(int(TIMES[name][:2]), int(TIMES[name][3:]), None, None,
                       f'{ROOT}/playAzaan.sh {ROOT}/media/Adhan-Makkah1.mp3 500 paplay 2 {log}')
               for name in PRAYERS[1:]],
-            app.Job(7, 0, None, 5,
+            app.Job(7, 0, None, (5,),
                     f'{ROOT}/playAzaan.sh {ROOT}/media/002-surah-baqarah-mishary.mp3 '
                     f'300 paplay 2 {log}'),
             UPDATE_JOB, REBOOT_JOB])
+
+
+
+class RuleTest(unittest.TestCase):
+    """The rules of adhan.toml (#43): ruleEvents(), and the jobs of buildJobs()."""
+
+    def test_a_relative_rule_follows_its_prayer_after_its_offset(self):
+        """C1: a relative rule plays at the time of its prayer, after the
+        offset of that prayer, plus its minutes. The times are from Aladhan,
+        see FIXED_TIMES: Bengaluru, Karachi, 2026-01-15, sunrise 06:46."""
+        args = (12.8369, 77.4089, 'Karachi', DATE, 5.5)
+        cases = [
+            ('dhuhr - 30min', NO_OFFSETS, '12:00'),
+            ('dhuhr - 30min, dhuhr offset +5', dict(NO_OFFSETS, dhuhr=5), '12:05'),
+            ('maghrib + 10min', NO_OFFSETS, '18:23'),
+            ('maghrib + 10min, maghrib offset -3', dict(NO_OFFSETS, maghrib=-3), '18:20'),
+            ('sunrise - 15min', NO_OFFSETS, '06:31'),
+            ('isha + 0min', NO_OFFSETS, '19:28'),
+            ('07:00', dict(NO_OFFSETS, fajr=10), '07:00'),
+        ]
+        for at, offsets, expected in cases:
+            with self.subTest(at, offsets=offsets):
+                name = at.split(',')[0]
+                rules = app.readRules([{'name': 'r', 'at': name, 'file': 'dua.mp3'}])
+                times = app.prayerTimes(*args, offsets=offsets)
+                [event] = app.ruleEvents(DATE, rules, times)
+                self.assertEqual(f'{event.time:%H:%M}', expected)
+
+    def test_events_are_the_rules_that_play_on_the_date(self):
+        """C2: ruleEvents() gives each rule that is on and plays on the date,
+        in the order of the rules. It needs no crontab, clock or file."""
+        dua = app.Rule('Evening dua', app.At('maghrib', 10), None, 'dua.mp3', None, True)
+        off = dua._replace(name='Off', enabled=False)
+        rules = (SURAH_BAQARAH_RULE, KAHF_RULE, dua, off)
+        friday, thursday = datetime.date(2026, 1, 16), DATE
+        self.assertEqual(app.ruleEvents(friday, rules, TIMES), [
+            app.Event(datetime.time(7, 0), SURAH_BAQARAH_RULE),
+            app.Event(datetime.time(12, 0), KAHF_RULE),
+            app.Event(datetime.time(18, 23), dua)])
+        self.assertEqual(app.ruleEvents(thursday, rules, TIMES),
+                         [app.Event(datetime.time(18, 23), dua)])
+        self.assertEqual(app.ruleEvents(friday, (), TIMES), [])
+
+    def test_each_rule_that_is_on_has_one_job(self):
+        """C2, C5: each rule that is on has exactly one job, at its time, on
+        its days, with its file, its volume or else the [audio] volume, the
+        player and the lead-in. A rule that is off has no job."""
+        log = f'>> {ROOT}/adhan.log 2>&1'
+        rules = app.readRules([
+            SURAH_BAQARAH, KAHF,
+            dict(DUA, days=['sun', 'mon', 'sat']),
+            {'name': 'Daily', 'at': 'fajr + 20min', 'file': '/home/me/My dua.mp3',
+             'volume': -1000},
+            {'name': 'Every day', 'at': '21:30', 'file': 'x.mp3', 'days': list(app.DAYS)},
+            {'name': 'Off', 'at': '08:00', 'file': 'missing.mp3', 'enabled': False}])
+        settings = SETTINGS._replace(rules=rules, leadin=2, player='vlc',
+                                     enabled=dict.fromkeys(PRAYERS, False))
+        jobs = app.buildJobs(TIMES, settings, ROOT, DATE)
+        self.assertEqual(jobs, [
+            app.Job(7, 0, None, (5,), f'{ROOT}/playAzaan.sh '
+                    f'{ROOT}/media/002-surah-baqarah-mishary.mp3 300 vlc 2 {log}'),
+            app.Job(12, 0, None, (5,),
+                    f'{ROOT}/playAzaan.sh {ROOT}/media/018-kahf.mp3 500 vlc 2 {log}'),
+            app.Job(18, 23, None, (0, 1, 6),
+                    f'{ROOT}/playAzaan.sh {ROOT}/media/dua.mp3 500 vlc 2 {log}'),
+            app.Job(5, 51, None, None,
+                    f"{ROOT}/playAzaan.sh '/home/me/My dua.mp3' -1000 vlc 2 {log}"),
+            app.Job(21, 30, None, None,
+                    f'{ROOT}/playAzaan.sh {ROOT}/media/x.mp3 500 vlc 2 {log}'),
+            UPDATE_JOB, REBOOT_JOB])
+
+    def test_the_jobs_of_a_rule_do_not_depend_on_the_day_of_the_update(self):
+        """C3: the update on each day of the week gives the same jobs for a
+        rule, so the nightly update and the update after a reboot give the
+        same crontab on any day."""
+        settings = SETTINGS._replace(rules=(SURAH_BAQARAH_RULE, KAHF_RULE))
+        week = [DATE + datetime.timedelta(days=n) for n in range(7)]
+        self.assertEqual({tuple(app.buildJobs(TIMES, settings, ROOT, day)) for day in week},
+                         {tuple(app.buildJobs(TIMES, settings, ROOT, DATE))})
+
+    def test_a_rule_before_0315_plays_on_its_day(self):
+        """C3: the nightly update runs at 03:15. A job at a time before 03:15
+        plays after the next midnight, before the next update. Cron checks
+        the day when it plays the job, so the rule plays on its own day, and
+        a relative rule plays at the time of the adhan that cron plays that
+        night, the same as an adhan before 03:15.
+
+        This plays two weeks of nightly updates in Bengaluru, and an update
+        after a reboot at 01:00 on a Friday, after the Pi was off at the
+        03:15 of that Friday."""
+        rules = app.readRules([
+            {'name': 'Night', 'days': ['fri'], 'at': '02:00', 'file': 'night.mp3'},
+            # Fajr is at about 05:31, so this is at about 03:01
+            {'name': 'Before fajr', 'days': ['fri'], 'at': 'fajr - 150min',
+             'file': 'tahajjud.mp3'}])
+        settings = SETTINGS._replace(rules=rules)
+
+        def times(day):
+            return app.prayerTimes(12.8369, 77.4089, 'Karachi', day, 5.5)
+
+        def plays(update, until):
+            # What cron plays of the rules after the update at the datetime
+            # update, until the next update at until: (datetime, file)
+            jobs = [job for job in app.buildJobs(times(update.date()), settings, ROOT,
+                                                 update.date())
+                    if '/media/night.mp3 ' in job.command or '/tahajjud.mp3 ' in job.command]
+            played = []
+            minute = update + datetime.timedelta(minutes=1)
+            while minute <= until:
+                for job in jobs:
+                    if (not job.reboot and (job.hour, job.minute) == (minute.hour, minute.minute)
+                            and (job.weekday is None
+                                 or minute.isoweekday() % 7 in job.weekday)):
+                        played.append((minute, job.command.split()[1].rsplit('/', 1)[1]))
+                minute += datetime.timedelta(minutes=1)
+            return played
+
+        def at(day, hhmm):
+            return datetime.datetime.combine(day, datetime.time(*map(int, hhmm.split(':'))))
+
+        start = datetime.date(2026, 1, 12)  # a Monday
+        played = []
+        for n in range(14):
+            day = start + datetime.timedelta(days=n)
+            played += plays(at(day, '03:15'), at(day + datetime.timedelta(days=1), '03:15'))
+        fridays = [datetime.date(2026, 1, 16), datetime.date(2026, 1, 23)]
+        thursdays = [friday - datetime.timedelta(days=1) for friday in fridays]
+        self.assertEqual(
+            played, [
+                event for friday, thursday in zip(fridays, thursdays) for event in (
+                    (at(friday, '02:00'), 'night.mp3'),
+                    # The time of the update before it, on Thursday
+                    (at(friday, times(thursday)['fajr']) - datetime.timedelta(minutes=150),
+                     'tahajjud.mp3'))])
+
+        # After a reboot at 01:00 on Friday, the update runs with the date of
+        # Friday, and the rules of that night still play
+        friday = fridays[0]
+        self.assertEqual(plays(at(friday, '01:00'), at(friday, '03:15')), [
+            (at(friday, '02:00'), 'night.mp3'),
+            (at(friday, times(friday)['fajr']) - datetime.timedelta(minutes=150),
+             'tahajjud.mp3')])
+
+    def test_a_time_that_is_not_in_the_day_is_an_error(self):
+        """C4: a relative time before 00:00 or after 23:59 stops the update,
+        also for a rule that does not play today. A rule that is off is not
+        checked."""
+        cases = [
+            ('before 00:00', 'fajr - 332min', None),
+            ('after 23:59', 'isha + 272min', None),
+            ('after 23:59 on a Friday only, the update on Thursday', 'isha + 300min', ('fri',)),
+        ]
+        for name, at, days in cases:
+            with self.subTest(name):
+                rule = app.Rule('Late', app.parseAt(at, 'Late'), days, 'x.mp3', None, True)
+                with self.assertRaises(app.ConfigError) as error:
+                    app.buildJobs(TIMES, SETTINGS._replace(rules=(rule,)), ROOT, DATE)
+                self.assertIn("'Late'", str(error.exception))
+                app.buildJobs(TIMES, SETTINGS._replace(rules=(rule._replace(enabled=False),)),
+                              ROOT, DATE)
+        # The first and the last minute of the day are in the day
+        for at, hour, minute in (('fajr - 331min', 0, 0), ('isha + 271min', 23, 59)):
+            with self.subTest(at):
+                rule = app.Rule('Edge', app.parseAt(at, 'Edge'), None, 'x.mp3', None, True)
+                jobs = app.buildJobs(TIMES, SETTINGS._replace(rules=(rule,)), ROOT, DATE)
+                self.assertIn((hour, minute), [(job.hour, job.minute) for job in jobs])
+
+    def test_the_old_surah_baqarah_table_gives_its_rule(self):
+        """C4: an old [surah_baqarah] table stops the update, and the message
+        gives the rule that plays the same file at the same time and volume."""
+        cases = [
+            ('on, volume 0', {'enabled': True, 'volume': 0},
+             dict(SURAH_BAQARAH, volume=0)),
+            ('on, volume -100', {'enabled': True, 'volume': -100},
+             dict(SURAH_BAQARAH, volume=-100)),
+            ('off', {'enabled': False, 'volume': 0},
+             dict(SURAH_BAQARAH, volume=0, enabled=False)),
+            ('empty, it was off by default', {}, dict(SURAH_BAQARAH, volume=0, enabled=False)),
+        ]
+        for name, table, rule in cases:
+            with self.subTest(name):
+                with self.assertRaises(app.ConfigError) as error:
+                    app.resolveSettings(args(), merge(STORED, {'surah_baqarah': table}))
+                message = str(error.exception)
+                self.assertIn('[surah_baqarah]', message)
+                given = tomllib.loads(message[message.index('[[rule]]'):])
+                self.assertEqual(given, {'rule': [rule]})
+                # The rule in the message is a correct rule
+                app.resolveSettings(args(), merge(STORED, given))
 
 
 class PruneLogTest(unittest.TestCase):
@@ -301,9 +498,9 @@ class ResolveSettingsTest(unittest.TestCase):
             ('the default is used', (), ONLY_LOCATION,
              dict(volume=DEFAULT_VOLUME, player='vlc')),
             ('an empty table gives the defaults', (),
-             merge(ONLY_LOCATION, {'audio': {}, 'prayers': {'fajr': {}}, 'surah_baqarah': {}}),
+             merge(ONLY_LOCATION, {'audio': {}, 'prayers': {'fajr': {}}}),
              dict(volume=DEFAULT_VOLUME, player='vlc', offsets=NO_OFFSETS, enabled=ALL_ON,
-                  audio=DEFAULT_AUDIO, surah_baqarah=False, surah_volume=0)),
+                  audio=DEFAULT_AUDIO, rules=())),
             ('0 from the command line is a value (#6)',
              ('--lat', '0', '--lon', '0', '--azaan-volume', '0', '--fajr-azaan-volume', '0'),
              STORED,
@@ -379,11 +576,34 @@ class ResolveSettingsTest(unittest.TestCase):
              dict(leadin=0)),
             ('the default lead-in is 0 (#14)', (), ONLY_LOCATION,
              dict(leadin=0)),
-            ('the stored Surah Baqarah is used (#9)', (),
-             merge(STORED, {'surah_baqarah': {'enabled': True, 'volume': -100}}),
-             dict(surah_baqarah=True, surah_volume=-100)),
-            ('Surah Baqarah is off by default (#9)', (), ONLY_LOCATION,
-             dict(surah_baqarah=False, surah_volume=0)),
+            ('the stored rules are used, in their order (#43)', (),
+             merge(STORED, {'rule': [SURAH_BAQARAH, KAHF]}),
+             dict(rules=(SURAH_BAQARAH_RULE, KAHF_RULE))),
+            ('a rule without days, volume and enabled plays every day, at the [audio] '
+             'volume (#43)', (),
+             merge(STORED, {'rule': [DUA]}),
+             dict(rules=(app.Rule('Evening dua', app.At('maghrib', 10), None, 'dua.mp3',
+                                  None, True),))),
+            ('a rule can be off (#43)', (),
+             merge(STORED, {'rule': [dict(DUA, enabled=False)]}),
+             dict(rules=(app.Rule('Evening dua', app.At('maghrib', 10), None, 'dua.mp3',
+                                  None, False),))),
+            ('a time and days in any case and with any spaces (#43)', (),
+             merge(STORED, {'rule': [dict(DUA, at=' Maghrib+10 MIN ',
+                                          days=['Sun', 'fri', 'FRI '])]}),
+             dict(rules=(app.Rule('Evening dua', app.At('maghrib', 10), ('fri', 'sun'),
+                                  'dua.mp3', None, True),))),
+            ('a rule can follow the sunrise, and a prayer + 0min (#43)', (),
+             merge(STORED, {'rule': [dict(DUA, at='sunrise - 15min'),
+                                     dict(DUA, name='Dua 2', at='isha + 0min')]}),
+             dict(rules=(app.Rule('Evening dua', app.At('sunrise', -15), None, 'dua.mp3',
+                                  None, True),
+                         app.Rule('Dua 2', app.At('isha', 0), None, 'dua.mp3', None, True)))),
+            ('a rule can play an absolute path (#43)', (),
+             merge(STORED, {'rule': [dict(DUA, file='/home/me/dua.mp3')]}),
+             dict(rules=(app.Rule('Evening dua', app.At('maghrib', 10), None,
+                                  '/home/me/dua.mp3', None, True),))),
+            ('there is no rule by default (#43)', (), ONLY_LOCATION, dict(rules=())),
             ('the player in any case', (), merge(STORED, {'audio': {'player': 'VLC'}}),
              dict(player='vlc')),
         ]
@@ -397,6 +617,11 @@ class ResolveSettingsTest(unittest.TestCase):
         """C4: bad or missing input is an error, not a schedule."""
         def prayer(name, **values):
             return merge(STORED, {'prayers': {name: values}})
+
+        def rule(**values):
+            # STORED with one rule, DUA with values, a value of None removes its key
+            table = merge(DUA, values)
+            return merge(STORED, {'rule': [table]})
 
         cases = [
             ('latitude nan', ('--lat', 'nan'), STORED),
@@ -423,27 +648,18 @@ class ResolveSettingsTest(unittest.TestCase):
             ('volume of a prayer as text', (), prayer('fajr', volume='-700')),
             ('player as a boolean', (), merge(STORED, {'audio': {'player': False}})),
             ('file as a number', (), merge(STORED, {'audio': {'file': 1}})),
-            ('Surah Baqarah on as text (#9)', (),
-             merge(STORED, {'surah_baqarah': {'enabled': 'True'}})),
-            ('Surah Baqarah volume as text (#9)', (),
-             merge(STORED, {'surah_baqarah': {'volume': '0'}})),
-            ('Surah Baqarah volume 1.5 (#9)', (),
-             merge(STORED, {'surah_baqarah': {'volume': 1.5}})),
             ('a date, which TOML can give', (),
              merge(STORED, {'location': {'lat': datetime.date(2026, 1, 15)}})),
             # A value where a table must be, and a table where a value must be
             ('[location] as a value', (), merge(STORED, {'location': 'London'})),
             ('[prayers] as a value', (), merge(STORED, {'prayers': 5})),
             ('[prayers.fajr] as a value', (), merge(STORED, {'prayers': {'fajr': False}})),
-            ('[surah_baqarah] as a value (#9)', (), merge(STORED, {'surah_baqarah': True})),
             ('latitude as a table', (), merge(STORED, {'location': {'lat': {'deg': 10}}})),
             # Unknown keys: a typo must not lose a value
             ('unknown table, the old [FRIDAY]', (), merge(STORED, {'FRIDAY': {}})),
             ('unknown value at the top', (), merge(STORED, {'lat': 10})),
             ('unknown key in [location]', (), merge(STORED, {'location': {'latitude': 10}})),
             ('unknown key in [audio]', (), merge(STORED, {'audio': {'default': 'x.mp3'}})),
-            ('unknown key in [surah_baqarah] (#9)', (),
-             merge(STORED, {'surah_baqarah': {'time': '07:00'}})),
             ('key in the wrong case', (), merge(STORED, {'location': {'Lat': 10}})),
             ('offset 5.5 is not a whole number (#12)', (), prayer('fajr', offset_minutes=5.5)),
             ('offset as text (#12)', (), prayer('isha', offset_minutes='5')),
@@ -470,6 +686,45 @@ class ResolveSettingsTest(unittest.TestCase):
              merge(STORED, {'audio': {'file': 'Adhan\n.mp3'}})),
             ('audio file with a carriage return (#10)', ('--audio', 'Adhan\r.mp3'), STORED),
             ('audio file with a tab (#10)', ('--audio', 'Adhan\t.mp3'), STORED),
+            # The rules (#43)
+            ('the old [surah_baqarah] table (#43)', (),
+             merge(STORED, {'surah_baqarah': {'enabled': True, 'volume': 0}})),
+            ('an empty old [surah_baqarah] table (#43)', (),
+             merge(STORED, {'surah_baqarah': {}})),
+            ('[rule] as one table, not [[rule]] (#43)', (), merge(STORED, {'rule': DUA})),
+            ('[[rule]] as a value (#43)', (), merge(STORED, {'rule': 'Evening dua'})),
+            ('[[rule]] as a list of values (#43)', (), merge(STORED, {'rule': ['Evening dua']})),
+            ('unknown key in a rule, a typo (#43)', (), rule(time='07:00')),
+            ('a rule without a name (#43)', (), rule(name=None)),
+            ('a rule without at (#43)', (), rule(at=None)),
+            ('a rule without a file (#43)', (), rule(file=None)),
+            ('name as a number (#43)', (), rule(name=1)),
+            ('empty name (#43)', (), rule(name=' ')),
+            ('name with a new line (#43)', (), rule(name='Evening\ndua')),
+            ('at as a number (#43)', (), rule(at=700)),
+            ('at as a TOML time (#43)', (), rule(at=datetime.time(7, 0))),
+            ('days as text, not a list (#43)', (), rule(days='fri')),
+            ('a day as a number (#43)', (), rule(days=['fri', 5])),
+            ('volume of a rule as text (#43)', (), rule(volume='0')),
+            ('volume of a rule 1.5 (#43)', (), rule(volume=1.5)),
+            ('enabled of a rule as text (#43)', (), rule(enabled='true')),
+            ('file of a rule as a number (#43)', (), rule(file=1)),
+            ('at 7:00, not HH:MM (#43)', (), rule(at='7:00')),
+            ('at 24:00 (#43)', (), rule(at='24:00')),
+            ('at 07:60 (#43)', (), rule(at='07:60')),
+            ('at a prayer with no minutes (#43)', (), rule(at='maghrib')),
+            ('at a prayer with no sign (#43)', (), rule(at='maghrib 10min')),
+            ('at in hours, not minutes (#43)', (), rule(at='maghrib + 1h')),
+            ('at an unknown prayer, a typo (#43)', (), rule(at='magrib + 10min')),
+            ('at midnight, which is not a prayer (#43)', (), rule(at='midnight + 10min')),
+            ('an unknown day (#43)', (), rule(days=['friday'])),
+            ('no day in days (#43)', (), rule(days=[])),
+            ('two rules with the same name (#43)', (),
+             merge(STORED, {'rule': [DUA, dict(DUA, at='isha + 5min')]})),
+            ('empty file of a rule (#43)', (), rule(file='')),
+            ('file of a rule with % (#43)', (), rule(file='100%.mp3')),
+            ('file of a rule with # (#43)', (), rule(file='Dua #2.mp3')),
+            ('file of a rule with a new line (#43)', (), rule(file='dua\n.mp3')),
         ]
         for name, argv, stored in cases:
             with self.subTest(name):
@@ -486,7 +741,10 @@ class WriteSettingsTest(unittest.TestCase):
         cases = [
             ('the defaults', app.resolveSettings(args(), ONLY_LOCATION)),
             ('every value changed', SETTINGS._replace(
-                lat=-33.8688, lon=151.0, asr='Hanafi', surah_baqarah=True, surah_volume=-200,
+                lat=-33.8688, lon=151.0, asr='Hanafi',
+                rules=(SURAH_BAQARAH_RULE._replace(volume=-200), KAHF_RULE,
+                       app.Rule('Evening "dua" é', app.At('maghrib', 0), tuple(app.DAYS),
+                                '/home/me/My "Dua" \\ é.mp3', None, False)),
                 leadin=3, volume={'default': 500, 'fajr': -500, 'maghrib': 100},
                 offsets=dict(NO_OFFSETS, fajr=5, isha=-10),
                 enabled=dict(ALL_ON, dhuhr=False),
@@ -509,13 +767,18 @@ class WriteSettingsTest(unittest.TestCase):
         self.assertEqual(data['prayers']['fajr'], {'file': 'Adhan-fajr.mp3', 'volume': -500,
                                                    'offset_minutes': 0, 'enabled': True})
         self.assertEqual(data['prayers']['isha'], {'offset_minutes': 0, 'enabled': True})
-        self.assertEqual(data['surah_baqarah'], {'enabled': False, 'volume': 300})
+        self.assertNotIn('rule', data)
+        data = tomllib.loads(app.settingsText(SETTINGS._replace(
+            rules=(SURAH_BAQARAH_RULE, KAHF_RULE))))
+        self.assertEqual(data['rule'], [dict(SURAH_BAQARAH, enabled=True),
+                                        dict(KAHF, enabled=True)])
 
     def test_the_writer_writes_toml(self):
         """C5: tomlText() writes the tables and values that tomllib reads back."""
         data = {'a': {'text': 'x "y" \\ z\u00e9', 'control': '\x7f\x01',
                       'whole': -3, 'float': 2.5, 'yes': True, 'no': False},
-                'b': {'c': {'d': 1}, 'e': {}}}
+                'b': {'c': {'d': 1}, 'e': {}},
+                'f': [{'list': ['x', 'y'], 'empty': []}, {'g': {'h': 2}}]}
         self.assertEqual(tomllib.loads(app.tomlText(data)), data)
 
 

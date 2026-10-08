@@ -5,7 +5,8 @@ default values of main(): the command line, the adhan.toml next to the
 script, the user crontab and the system timezone. The expected crontab was
 recorded from the script before the refactor into a core and a shell (#16).
 #7 removed the job that cleared the log every month. #15 added the update
-after a reboot. #42 moved the settings from settings.ini to adhan.toml. The
+after a reboot. #42 moved the settings from settings.ini to adhan.toml. #43
+removed the [surah_baqarah] table, which is a rule now. The
 tests in test_main.py cover the other cases through main() with fakes.
 """
 
@@ -60,10 +61,6 @@ enabled = true
 [prayers.isha]
 offset_minutes = 0
 enabled = true
-
-[surah_baqarah]
-enabled = false
-volume = 0
 '''
 
 # A settings.ini of before #42. The app does not read it.
