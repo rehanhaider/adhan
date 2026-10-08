@@ -33,8 +33,8 @@ The tests protect these promises (see #16):
 | C1 | The times are correct for the location, method, date and timezone. |
 | C2 | Each prayer has exactly one job at its time, with the correct audio file, volume and player. |
 | C3 | The schedule renews itself, and a second run does not add jobs. Other cron jobs stay. |
-| C4 | Bad input or a time that cannot be calculated stops the script. The crontab and `settings.ini` do not change. |
-| C5 | Each setting comes from the command line, then `settings.ini`, then the default. |
+| C4 | Bad input or a time that cannot be calculated stops the script. The crontab and `adhan.toml` do not change. |
+| C5 | Each setting comes from the command line, then `adhan.toml`, then the default. |
 | C6 | `playAzaan.sh` plays the file with the selected player at the correct gain, and runs the hooks. |
 
 Rules:
@@ -47,7 +47,7 @@ Rules:
    `tests/test_main.py`.
 3. Run the full suite before a merge. Do not merge if a test fails.
 4. Each new test names the promise (C1 to C6) that it protects.
-5. No test may read or write the real crontab, the real `settings.ini` or the
+5. No test may read or write the real crontab, the real `adhan.toml` or the
    speakers. Use the fakes in `tests/fakes.py`: temporary folders, an
    in-memory `CronTab(tab=...)` and a fake `cvlc` on `PATH`. Do not use
    `mock.patch` on the functions of the app.

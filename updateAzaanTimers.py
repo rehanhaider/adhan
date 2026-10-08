@@ -11,8 +11,9 @@ import getpass
 import os
 import shlex
 import shutil
+import re
 import subprocess
-from configparser import ConfigParser
+import tomllib
 
 
 root_dir = dirname(abspath(__file__))
@@ -26,8 +27,12 @@ from crontab import CronTab
 SUPPORTED_PLAYERS = {'vlc': 'cvlc', 'paplay': 'paplay'}
 DEFAULT_PLAYER = 'vlc'
 
+# The file of the settings, next to this script (#42). It is read with
+# tomllib and written with tomlText().
+SETTINGS_FILE = 'adhan.toml'
+
 # Calculation methods that PrayTimes knows. The same list is used for the
-# --method choices and to check a method edited by hand in settings.ini.
+# --method choices and to check a method edited by hand in adhan.toml.
 SUPPORTED_METHODS = list(PrayTimes.methods)
 
 # Asr schools that PrayTimes knows (#11). Hanafi uses a shadow factor of 2, so
@@ -43,11 +48,33 @@ PRAYERS = ('fajr', 'dhuhr', 'asr', 'maghrib', 'isha')
 DEFAULT_LEADIN = 0
 MAX_LEADIN = 10
 
-# The adhan files when settings.ini does not give one (#10). 'default' is for
-# dhuhr, asr, maghrib and isha when they have no file of their own. Fajr
-# always has its own file, so that a settings.ini without [AUDIO] keeps the
-# files of before.
+# The adhan files and volumes when adhan.toml does not give one (#10).
+# 'default' is for each prayer that has no value of its own. Fajr always has
+# its own file and volume, so that a change of the default does not change
+# Fajr. The volumes are in millibels, see playAzaan.sh.
 DEFAULT_AUDIO = {'default': 'Adhan-Makkah1.mp3', 'fajr': 'Adhan-fajr.mp3'}
+DEFAULT_VOLUME = {'default': 0, 'fajr': 0}
+
+# The file of the Friday job (#9), in media/
+SURAH_BAQARAH_FILE = '002-surah-baqarah-mishary.mp3'
+
+# The tables and keys of adhan.toml, with the type of each value. A key that
+# is not here stops the script, so that a typo cannot lose a value.
+NUMBER = (int, float)
+SCHEMA = {
+    'location': {'lat': NUMBER, 'lon': NUMBER, 'method': str, 'asr': str},
+    'audio': {'player': str, 'leadin_seconds': int, 'volume': int, 'file': str},
+    'prayers': {name: {'file': str, 'volume': int, 'offset_minutes': int, 'enabled': bool}
+                for name in PRAYERS},
+    'surah_baqarah': {'enabled': bool, 'volume': int},
+}
+TYPE_NAMES = {NUMBER: 'a number', int: 'a whole number', bool: 'true or false',
+              str: 'a text in double quotes'}
+
+# The first lines of adhan.toml
+SETTINGS_HEADER = ('# The settings of the adhan clock. See README.md.\n'
+                   '# updateAzaanTimers.py writes this file again on each run, '
+                   'so comments are lost.\n')
 
 # Every job this script adds has this comment, so that the next run can remove
 # them and leave the other jobs in the user's crontab alone.
@@ -74,13 +101,13 @@ class ConfigError(Exception):
 
 
 Settings = namedtuple('Settings', [
-    'lat', 'lon', 'method', 'asr', 'default_azaan_vol', 'fajr_azaan_vol',
+    'lat', 'lon', 'method', 'asr',
+    'volume',  # 'default' and the prayers that have their own volume, see prayerVolume()
     'surah_baqarah', 'surah_volume', 'player',
     'leadin',  # seconds of silence before each adhan
     'offsets',  # minutes to add to each prayer time, by prayer name
     'enabled',  # True for each prayer that has a job, by prayer name
-    'audio',  # 'default' and the prayers that have their own file, see audioFile()
-    'warnings'])  # messages for the user about values that fell back to a default
+    'audio'])  # 'default' and the prayers that have their own file, see audioFile()
 
 # One cron job. A day or weekday of None means every day ('*'). A job with
 # reboot runs once each time the Pi starts (@reboot), and has no time.
@@ -97,7 +124,7 @@ def parseArgs():
     parser.add_argument('--method', choices=SUPPORTED_METHODS,
                         dest='method',
                         help='Method of calculation')
-    # No choices=: checkAsr() accepts any case, and checks settings.ini too
+    # No choices=: checkAsr() accepts any case, and checks adhan.toml too
     parser.add_argument('--asr', dest='asr', metavar='{' + ','.join(SUPPORTED_ASR) + '}',
                         help=f'Asr school, Hanafi gives a later Asr (default {DEFAULT_ASR})')
     parser.add_argument('--azaan-volume', type=int, dest='default_azaan_vol',
@@ -134,88 +161,86 @@ def parseArgs():
 # ---------------------------------
 # ---------------------------------
 def resolveSettings(args, stored):
-    """Merge the command line (args) with settings.ini (stored, a ConfigParser).
+    """Merge the command line (args) with adhan.toml (stored, as tomllib reads it).
 
-    Each value comes from the command line, then settings.ini, then the
+    Each value comes from the command line, then adhan.toml, then the
     default. Returns Settings, or raises ConfigError.
     """
-    warnings = []
+    checkSchema(stored)
+    location = stored.get('location', {})
+    audio = stored.get('audio', {})
+    prayers = stored.get('prayers', {})
+    surah = stored.get('surah_baqarah', {})
 
-    # Get mandatory data. First check args, if not present check settings.ini
-    try:
-        if args.lat is not None:
-            lat = checkCoordinate('latitude', float(args.lat), 90)
-        else:
-            lat = checkCoordinate('latitude', float(stored['DEFAULT']['lat']), 90)
+    def required(arg_value, key):
+        value = location.get(key) if arg_value is None else arg_value
+        if value is None:
+            raise ConfigError(f"No {key} in [location] in {SETTINGS_FILE}, "
+                              f"please provide --lat, --lon and --method")
+        return value
 
-        if args.lon is not None:
-            lon = checkCoordinate('longitude', float(args.lon), 180)
-        else:
-            lon = checkCoordinate('longitude', float(stored['DEFAULT']['lon']), 180)
+    lat = checkCoordinate('latitude', float(required(args.lat, 'lat')), 90)
+    lon = checkCoordinate('longitude', float(required(args.lon, 'lon')), 180)
+    method = checkMethod(required(args.method, 'method'))
+    asr = checkAsr(location.get('asr', DEFAULT_ASR) if args.asr is None else args.asr)
 
-        if args.method:
-            method = args.method
-        else:
-            method = checkMethod(stored['DEFAULT']['method'])
-    except (KeyError, ValueError) as err:
-        raise ConfigError(f"Incorrect value or values not provided: {err}, "
-                          f"please provide --lat, --lon and --method") from err
-
-    # Get optional data
-    if args.asr is not None:
-        asr = checkAsr(args.asr)
-    else:
-        asr = checkAsr(stored['DEFAULT'].get('asr', DEFAULT_ASR))
-    default_azaan_vol = getVolume(args.default_azaan_vol, stored, 'defaultAzaanVolume', warnings)
-    fajr_azaan_vol = getVolume(args.fajr_azaan_vol, stored, 'fajrAzaanVolume', warnings)
-
-    # Setup Surah Baqarah on Fridays
-    try:
-        surahBaqarah, surahVolume = readFriday(stored)
-    except (KeyError, ValueError) as err:
-        warnings.append(f"Surah Baqarah not configured, disabling it: {err}")
-        surahBaqarah = False
-        surahVolume = 0
-
-    # Player used by playAzaan.sh. A value edited by hand in settings.ini is not
+    # Player used by playAzaan.sh. A value edited by hand in adhan.toml is not
     # covered by argparse's choices, so validate it here too.
-    if args.player:
-        player = args.player
-    else:
-        player = stored.get('PLAYER', 'player', fallback=DEFAULT_PLAYER).strip().lower()
+    player = (args.player or audio.get('player', DEFAULT_PLAYER)).strip().lower()
     if player not in SUPPORTED_PLAYERS:
-        raise ConfigError(f"Unsupported player '{player}' in settings.ini, "
+        raise ConfigError(f"Unsupported player '{player}' in {SETTINGS_FILE}, "
                           f"use one of: {', '.join(sorted(SUPPORTED_PLAYERS))}")
 
-    leadin = readLeadin(args, stored)
-    offsets = readOffsets(args, stored)
-    enabled = readEnabled(args, stored)
-    audio = readAudio(args, stored)
+    return Settings(
+        lat, lon, method, asr,
+        volume=readVolume(args, audio, prayers),
+        surah_baqarah=surah.get('enabled', False),
+        surah_volume=surah.get('volume', 0),
+        player=player,
+        leadin=readLeadin(args, audio),
+        offsets={name: prayerValue(args, f'{name}_offset', prayers, name, 'offset_minutes', 0)
+                 for name in PRAYERS},
+        enabled={name: prayerValue(args, f'{name}_enabled', prayers, name, 'enabled', True)
+                 for name in PRAYERS},
+        audio=readAudio(args, audio, prayers))
 
-    return Settings(lat, lon, method, asr, default_azaan_vol, fajr_azaan_vol,
-                    surahBaqarah, surahVolume, player, leadin, offsets, enabled, audio,
-                    warnings)
+
+def checkSchema(data, schema=SCHEMA, path=''):
+    """Raise ConfigError on a key that is not in schema, or on a value of the
+    wrong type, so that the whole file is correct before it is used."""
+    for key, value in data.items():
+        name = path + key
+        if key not in schema:
+            where = f'[{path[:-1]}]' if path else 'the top level'
+            raise ConfigError(f"Unknown key '{name}' in {SETTINGS_FILE}, "
+                              f"use one of these in {where}: {', '.join(schema)}")
+        expected = schema[key]
+        if isinstance(expected, dict):
+            if not isinstance(value, dict):
+                raise ConfigError(f"'{name}' in {SETTINGS_FILE} must be a table, [{name}]")
+            checkSchema(value, expected, name + '.')
+        # In Python, True is also an int, but in TOML true is not a number
+        elif isinstance(value, bool) != (expected is bool) or not isinstance(value, expected):
+            raise ConfigError(f"Invalid value {value!r} for '{name}' in {SETTINGS_FILE}, "
+                              f"use {TYPE_NAMES[expected]}")
+
+
+def prayerValue(args, arg_name, prayers, name, key, default):
+  # The value of one key of one prayer, from the command line, then
+  # [prayers.<name>] in adhan.toml, then default
+  arg_value = getattr(args, arg_name)
+  if arg_value is not None:
+    return arg_value
+  return prayers.get(name, {}).get(key, default)
 
 
 def checkCoordinate(name, value, limit):
   # float() accepts 'nan' and 'inf', and PrayTimes gives wrong times or none at
-  # all for values out of range. Stop before settings.ini is saved so a bad
+  # all for values out of range. Stop before adhan.toml is saved so a bad
   # value is not saved and every nightly update after it does not fail on it too.
   if not math.isfinite(value) or not -limit <= value <= limit:
     raise ConfigError(f"Invalid {name} {value}, use a number from {-limit} to {limit}")
   return value
-
-
-def getVolume(arg_value, config, key, warnings):
-  # Resolve each volume on its own, so a missing or bad stored value falls back
-  # to 0 for that volume only and does not discard the other one.
-  if arg_value is not None:
-    return int(arg_value)
-  try:
-    return int(config['VOLUME'][key])
-  except (KeyError, ValueError) as err:
-    warnings.append(f"Using default {key} 0, could not read the configured one: {err}")
-    return 0
 
 
 def checkMethod(method):
@@ -225,7 +250,7 @@ def checkMethod(method):
   canonical = {name.lower(): name for name in SUPPORTED_METHODS}
   name = canonical.get(method.strip().lower())
   if name is None:
-    raise ConfigError(f"Unsupported method '{method}' in settings.ini, "
+    raise ConfigError(f"Unsupported method '{method}' in {SETTINGS_FILE}, "
                       f"use one of: {', '.join(SUPPORTED_METHODS)}")
   return name
 
@@ -240,102 +265,64 @@ def checkAsr(asr):
   return name
 
 
-def readLeadin(args, config):
+def readLeadin(args, audio):
   # The seconds of silence before the adhan (#14), from the command line, then
-  # [PLAYER] in settings.ini, then DEFAULT_LEADIN. Stop on a value that is not
-  # a whole number from 0 to MAX_LEADIN.
-  if args.leadin is not None:
-    value = args.leadin
-  else:
-    value = config.get('PLAYER', 'leadin_seconds', fallback=str(DEFAULT_LEADIN))
-  try:
-    leadin = int(value)
-  except ValueError:
-    leadin = None
-  if leadin is None or not 0 <= leadin <= MAX_LEADIN:
-    raise ConfigError(f"Invalid lead-in '{value}', use a whole number of seconds "
+  # [audio] in adhan.toml, then DEFAULT_LEADIN. Stop on a value that is not
+  # from 0 to MAX_LEADIN.
+  leadin = audio.get('leadin_seconds', DEFAULT_LEADIN) if args.leadin is None else args.leadin
+  if not 0 <= leadin <= MAX_LEADIN:
+    raise ConfigError(f"Invalid lead-in '{leadin}', use a whole number of seconds "
                       f"from 0 to {MAX_LEADIN}")
   return leadin
 
 
-def prayerSection(config, name, other_keys=()):
-  # The keys written in a section that has one key for each prayer, such as
-  # [OFFSETS], and maybe other_keys. Stop on an unknown name: a typo must not
-  # lose a value.
-  # config[name] also has the keys of [DEFAULT] (lat, lon, method), and
-  # ConfigParser has no public way to leave them out.
-  section = config._sections.get(name, {})
-  unknown = [key for key in section if key not in PRAYERS + tuple(other_keys)]
-  if unknown:
-    raise ConfigError(f"Unknown prayer '{unknown[0]}' in [{name}] in settings.ini, "
-                      f"use: {', '.join(PRAYERS + tuple(other_keys))}")
-  return section
-
-
-def readOffsets(args, config):
-  # The minutes to add to each prayer time (#12), from the command line, then
-  # [OFFSETS] in settings.ini, then 0. Stop on a value that is not a whole
-  # number.
-  section = prayerSection(config, 'OFFSETS')
-  offsets = {}
+def readVolume(args, audio, prayers):
+  # The volumes, from the command line, then adhan.toml, then
+  # DEFAULT_VOLUME. Keep 'default', 'fajr' and the other prayers that have a
+  # volume of their own, so that a later change of 'default' still changes
+  # them.
+  volume = dict(DEFAULT_VOLUME)
+  if 'volume' in audio:
+    volume['default'] = audio['volume']
   for name in PRAYERS:
-    if getattr(args, f'{name}_offset') is not None:
-      offsets[name] = getattr(args, f'{name}_offset')
-      continue
-    value = section.get(name, '0')
-    try:
-      offsets[name] = int(value)
-    except ValueError:
-      raise ConfigError(f"Invalid offset '{value}' for {name} in settings.ini, "
-                        f"use a whole number of minutes, for example 5 or -3") from None
-  return offsets
+    if 'volume' in prayers.get(name, {}):
+      volume[name] = prayers[name]['volume']
+  if args.default_azaan_vol is not None:
+    volume['default'] = args.default_azaan_vol
+  if args.fajr_azaan_vol is not None:
+    volume['fajr'] = args.fajr_azaan_vol
+  return volume
 
 
-def readEnabled(args, config):
-  # True for each prayer that has a job (#13), from the command line, then
-  # [ENABLED] in settings.ini, then True. Accept the values of getboolean()
-  # (true, false, yes, no, on, off, 1, 0) and stop on any other value.
-  section = prayerSection(config, 'ENABLED')
-  enabled = {}
-  for name in PRAYERS:
-    if getattr(args, f'{name}_enabled') is not None:
-      enabled[name] = getattr(args, f'{name}_enabled')
-      continue
-    value = section.get(name, 'true')
-    if value.lower() not in ConfigParser.BOOLEAN_STATES:
-      raise ConfigError(f"Invalid value '{value}' for {name} in [ENABLED] in settings.ini, "
-                        f"use true or false")
-    enabled[name] = ConfigParser.BOOLEAN_STATES[value.lower()]
-  return enabled
+def prayerVolume(volume, name):
+  # The volume of the adhan of the prayer name
+  return volume.get(name, volume['default'])
 
 
-def readAudio(args, config):
-  # The adhan files (#10), from the command line, then [AUDIO] in
-  # settings.ini, then DEFAULT_AUDIO. Keep 'default', 'fajr' and the other
-  # prayers that have a file of their own, so that a later change of
-  # 'default' still changes them. main() checks that the files are there.
-  section = prayerSection(config, 'AUDIO', ['default'])
-  audio = {}
+def readAudio(args, audio, prayers):
+  # The adhan files (#10), from the command line, then adhan.toml, then
+  # DEFAULT_AUDIO. Keep 'default', 'fajr' and the other prayers that have a
+  # file of their own, so that a later change of 'default' still changes
+  # them. main() checks that the files are there.
+  stored = {'default': audio.get('file')}
+  stored.update((name, prayers.get(name, {}).get('file')) for name in PRAYERS)
+  files = {}
   for key in ('default',) + PRAYERS:
     value = getattr(args, f'{key}_audio')
     if value is None:
-      value = section.get(key, DEFAULT_AUDIO.get(key))
+      value = stored[key] if stored[key] is not None else DEFAULT_AUDIO.get(key)
     if value is None:
       continue
     if not value:
-      raise ConfigError(f"No audio file for {key} in [AUDIO] in settings.ini")
+      raise ConfigError(f"No audio file for {key} in {SETTINGS_FILE}")
     # cron changes % into a new line, and the crontab library reads # as the
-    # start of the comment, so the next update would not find the job.
-    # settings.ini reads a control character such as \r as a new line.
+    # start of the comment, so the next update would not find the job. A
+    # control character such as a new line breaks the line of the job.
     if any(char in '%#' or not char.isprintable() for char in value):
       raise ConfigError(f"Invalid audio file {value!r} for {key}, a file name "
                         f"cannot have %, # or a control character")
-    # settings.ini does not keep a space at the start or the end
-    if value != value.strip():
-      raise ConfigError(f"Invalid audio file '{value}' for {key}, a file name "
-                        f"cannot start or end with a space")
-    audio[key] = value
-  return audio
+    files[key] = value
+  return files
 
 
 def audioFile(audio, name, root_dir):
@@ -345,10 +332,83 @@ def audioFile(audio, name, root_dir):
   return value if os.path.isabs(value) else f"{root_dir}/media/{value}"
 
 
-def readFriday(config):
-  # getboolean, not bool(): bool() on the string "False" is True
-  return (config['FRIDAY'].getboolean('playSurahBaqarah', fallback=False),
-          int(config['FRIDAY']['surahVolume']))
+def settingsData(settings):
+    """The settings as the tables of adhan.toml, in the order of the file."""
+    prayers = {}
+    for name in PRAYERS:
+        table = prayers[name] = {}
+        if name in settings.audio:
+            table['file'] = settings.audio[name]
+        if name in settings.volume:
+            table['volume'] = settings.volume[name]
+        table['offset_minutes'] = settings.offsets[name]
+        table['enabled'] = settings.enabled[name]
+    return {
+        'location': {'lat': settings.lat, 'lon': settings.lon,
+                     'method': settings.method, 'asr': settings.asr},
+        'audio': {'player': settings.player, 'leadin_seconds': settings.leadin,
+                  'volume': settings.volume['default'], 'file': settings.audio['default']},
+        'prayers': prayers,
+        'surah_baqarah': {'enabled': settings.surah_baqarah, 'volume': settings.surah_volume},
+    }
+
+
+def settingsText(settings):
+    """The text of adhan.toml for settings."""
+    return SETTINGS_HEADER + '\n' + tomlText(settingsData(settings))
+
+
+def tomlText(data):
+    """data, a dict of tables, as TOML text that tomllib reads back as data.
+
+    The standard library of Python can read TOML but not write it. This small
+    writer knows only what adhan.toml needs: tables, and text, whole numbers,
+    floats and booleans in them. All the TOML that the app writes comes from
+    here, so tomlkit can replace this function after #29.
+    """
+    blocks = []
+
+    def table(name, values):
+        lines = [f'{tomlKey(key)} = {tomlValue(value)}'
+                 for key, value in values.items() if not isinstance(value, dict)]
+        # A table that has only tables in it needs no header of its own
+        if lines or not values:
+            blocks.append('\n'.join([f'[{name}]'] + lines) + '\n')
+        for key, value in values.items():
+            if isinstance(value, dict):
+                table(f'{name}.{tomlKey(key)}', value)
+
+    for key, value in data.items():
+        if not isinstance(value, dict):
+            raise TypeError(f'{key}: the top level of adhan.toml has only tables')
+        table(tomlKey(key), value)
+    return '\n'.join(blocks)
+
+
+def tomlKey(key):
+    if not re.fullmatch(r'[A-Za-z0-9_-]+', key):
+        raise ValueError(f'{key!r} is not a bare TOML key')
+    return key
+
+
+def tomlValue(value):
+    if isinstance(value, bool):
+        return 'true' if value else 'false'
+    if isinstance(value, int):
+        return str(value)
+    if isinstance(value, float):
+        if not math.isfinite(value):
+            raise ValueError(f'{value} is not a TOML number that the app writes')
+        return repr(value)
+    if isinstance(value, str):
+        # A basic string: escape the quote, the backslash and the control
+        # characters, which TOML does not allow as they are
+        return '"' + ''.join(
+            '\\' + char if char in '"\\'
+            else f'\\u{ord(char):04x}' if ord(char) < 0x20 or ord(char) == 0x7f
+            else char
+            for char in value) + '"'
+    raise TypeError(f'{value!r} is not a type that the app writes to adhan.toml')
 
 
 def prayerTimes(lat, lon, method, date, utcOffset, offsets=None, asr=DEFAULT_ASR):
@@ -398,12 +458,12 @@ def buildJobs(times, settings, root_dir):
         if not settings.enabled[name]:
             continue
         hour, minute = times[name].split(':')
-        volume = settings.fajr_azaan_vol if name == 'fajr' else settings.default_azaan_vol
-        command = play(audioFile(settings.audio, name, root_dir), volume)
+        command = play(audioFile(settings.audio, name, root_dir),
+                       prayerVolume(settings.volume, name))
         jobs.append(Job(int(hour), int(minute), None, None, command))
     if settings.surah_baqarah:
         jobs.append(Job(7, 0, None, 5,
-                        play(f"{root_dir}/media/002-surah-baqarah-mishary.mp3",
+                        play(f"{root_dir}/media/{SURAH_BAQARAH_FILE}",
                              settings.surah_volume)))
     # Run this script again overnight. It also deletes the old lines of the log.
     jobs.append(Job(3, 15, None, None, f"python3 {root_dir}/updateAzaanTimers.py {strLog}"))
@@ -454,7 +514,7 @@ def logDate(line):
 # CORE END
 
 
-# SHELL: reads and writes the crontab, settings.ini and the system
+# SHELL: reads and writes the crontab, adhan.toml and the system
 # ---------------------------------
 # ---------------------------------
 def checkPlayer(player):
@@ -479,38 +539,32 @@ def checkAudio(settings, root_dir):
   # Stop before the save on an adhan file that is not there or cannot be
   # read, so that a typo cannot silence an adhan (#10). playAzaan.sh would
   # only find it at the time of the prayer. Only the prayers that are on
-  # play a file.
-  for name in PRAYERS:
-    path = audioFile(settings.audio, name, root_dir)
-    if settings.enabled[name] and not (os.path.isfile(path) and os.access(path, os.R_OK)):
+  # play a file, and the Surah Baqarah file only when it is on.
+  files = [(name, audioFile(settings.audio, name, root_dir))
+           for name in PRAYERS if settings.enabled[name]]
+  if settings.surah_baqarah:
+    files.append(('Surah Baqarah', f"{root_dir}/media/{SURAH_BAQARAH_FILE}"))
+  for name, path in files:
+    if not (os.path.isfile(path) and os.access(path, os.R_OK)):
       raise ConfigError(f"The audio file for {name} is not there or cannot be read: {path}")
 
 
-def saveSettings(config, args, settings, file_path):
-    # Change only the values that come from the command line or that had to be
-    # resolved, so the rest of settings.ini stays as the user wrote it
-    if args.lat is not None:
-        config['DEFAULT']['lat'] = str(settings.lat)
-    if args.lon is not None:
-        config['DEFAULT']['lon'] = str(settings.lon)
-    config['DEFAULT']['method'] = settings.method
-    config['DEFAULT']['asr'] = settings.asr
-    config["VOLUME"] = {
-        "defaultAzaanVolume": str(settings.default_azaan_vol),
-        "fajrAzaanVolume": str(settings.fajr_azaan_vol)
-        }
+def readSettingsFile(path):
+    """adhan.toml as tomllib reads it, or {} if there is no file yet."""
     try:
-        readFriday(config)
-    except (KeyError, ValueError):
-        config["FRIDAY"] = {"playSurahBaqarah": str(settings.surah_baqarah),
-                            "surahVolume": str(settings.surah_volume)}
-    config["PLAYER"] = {"player": settings.player, "leadin_seconds": str(settings.leadin)}
-    config["OFFSETS"] = {name: str(settings.offsets[name]) for name in PRAYERS}
-    config["ENABLED"] = {name: str(settings.enabled[name]).lower() for name in PRAYERS}
-    config["AUDIO"] = settings.audio
+        with open(path, 'rb') as fh:
+            return tomllib.load(fh)
+    except FileNotFoundError:
+        return {}
+    except (tomllib.TOMLDecodeError, UnicodeDecodeError) as err:
+        raise ConfigError(f"{path} is not a correct TOML file: {err}") from err
 
-    with open(file_path, 'w') as configfile:
-        config.write(configfile)
+
+def saveSettings(settings, file_path):
+    # Write all the settings, so that the nightly update uses the values of
+    # the command line too
+    with open(file_path, 'w') as fh:
+        fh.write(settingsText(settings))
 
 
 def log(text=''):
@@ -596,14 +650,14 @@ def main(argv=None, settings_path=None, cron=None, today=None, utcOffset=None,
     """Delete the old lines of the log, calculate today's prayer times and
     replace the jobs of this script.
 
-    Every argument defaults to the real one: the command line, settings.ini
+    Every argument defaults to the real one: the command line, adhan.toml
     next to this script, the user's crontab, today, the system timezone,
     adhan.log next to this script and TIME_SYNC_TIMEOUT.
     On a ConfigError, print it and exit 1 before the crontab is changed. With
     --wait-for-time-sync, if the clock does not synchronize, exit 1 too.
     """
     if settings_path is None:
-        settings_path = pathjoin(root_dir, 'settings.ini')
+        settings_path = pathjoin(root_dir, SETTINGS_FILE)
     if log_path is None:
         log_path = pathjoin(root_dir, 'adhan.log')
     if sync_timeout is None:
@@ -637,13 +691,8 @@ def main(argv=None, settings_path=None, cron=None, today=None, utcOffset=None,
     except Exception as err:
         log(f"Could not delete the old lines of {log_path}: {err}")
 
-    config = ConfigParser()
-    config.read(settings_path)
-
     try:
-        settings = resolveSettings(args, config)
-        for warning in settings.warnings:
-            log(warning)
+        settings = resolveSettings(args, readSettingsFile(settings_path))
         # Check the player is usable before it is saved, so a failed --player
         # change does not leave every nightly update failing on the same value
         checkPlayer(settings.player)
@@ -652,7 +701,7 @@ def main(argv=None, settings_path=None, cron=None, today=None, utcOffset=None,
         # cannot be calculated is not saved for the nightly update (#31)
         times = prayerTimes(settings.lat, settings.lon, settings.method, today, utcOffset,
                             settings.offsets, settings.asr)
-        saveSettings(config, args, settings, settings_path)
+        saveSettings(settings, settings_path)
     except ConfigError as err:
         log(err)
         sys.exit(1)
@@ -676,7 +725,7 @@ def main(argv=None, settings_path=None, cron=None, today=None, utcOffset=None,
         log(f"{name.capitalize() + ':':<9}{times[name]} hrs{note}")
     log("---------------------------------")
     if not any(settings.enabled.values()):
-        log("All five prayers are off in [ENABLED] in settings.ini, so no adhan is scheduled.")
+        log(f"All five prayers are off in {SETTINGS_FILE}, so no adhan is scheduled.")
 
     # Add times to crontab
     log()

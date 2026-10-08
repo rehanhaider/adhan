@@ -3,7 +3,7 @@
 #
 # USAGE: playAzaan.sh <audio-path> [<volume-millibels>] [<player>] [<leadin-seconds>]
 #
-# Player is vlc (the default) or paplay, as set in settings.ini.
+# Player is vlc (the default) or paplay, as set in adhan.toml.
 #
 # Lead-in is the seconds of silence to play before the file (default 0), so
 # that a speaker that is slow to wake up does not lose the start of it (#14).
