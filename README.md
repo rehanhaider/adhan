@@ -69,9 +69,6 @@ If the script runs correctly, the output is similar to this. `USER` is your user
 
 ```
 2026-05-15 12:00:00 Updating the prayer times
-2026-05-15 12:00:00 Using default defaultAzaanVolume 0, could not read the configured one: 'VOLUME'
-2026-05-15 12:00:00 Using default fajrAzaanVolume 0, could not read the configured one: 'VOLUME'
-2026-05-15 12:00:00 Surah Baqarah not configured, disabling it: 'FRIDAY'
 2026-05-15 12:00:00 ---------------------------------
 2026-05-15 12:00:00 Co-ordinates provided
 2026-05-15 12:00:00 ---------------------------------
@@ -107,10 +104,6 @@ If the script runs correctly, the output is similar to this. `USER` is your user
 2026-05-15 12:00:00 Script execution finished at: 2026-05-15 12:00:00.123456
 ```
 
-The first run has no `settings.ini` yet, so it uses the defaults. The lines with "Using
-default" and "not configured" tell you this. The script then writes `settings.ini`, and
-the next runs do not show these lines.
-
 The "Cron jobs scheduled" part shows the jobs that the script added to your crontab:
 * The first 5 jobs play the 5 adhans at today's prayer times.
 * The `15 3 * * *` job runs the script again at 03:15 every night. That run calculates the
@@ -125,18 +118,20 @@ Each job ends with the comment `# rpiAdhanClockJob`. The script uses this commen
 its own jobs. Each run removes all the jobs with this comment and adds the new jobs. Your
 other cron jobs do not change. Do not add this comment to your own jobs.
 
-The script saves its settings in `~/adhan/settings.ini`. For the next runs, you do not
+The script saves its settings in `~/adhan/adhan.toml`. For the next runs, you do not
 have to give the arguments again. The nightly run uses the saved settings.
 
 You are done. Connect your speakers and enjoy!
 
 ## Settings
-You can give each setting on the command line, or write it in `settings.ini`. The script
-uses the value from the command line first, then the value in `settings.ini`, then the
-default. It saves each value from the command line in `settings.ini`. You can give the
-optional settings in the first run or in a later run.
+You can give each setting on the command line, or write it in `adhan.toml`. The script
+uses the value from the command line first, then the value in `adhan.toml`, then the
+default. You can give the optional settings in the first run or in a later run.
 
-After you edit `settings.ini`, the new values apply at the next run. To apply them now,
+Each run writes all the settings to `adhan.toml` again, with the values from the command
+line. Thus the nightly run uses them too. The comments in the file are lost.
+
+After you edit `adhan.toml`, the new values apply at the next run. To apply them now,
 run the script again without arguments:
 
 ```bash
@@ -150,61 +145,109 @@ python3 ~/adhan/updateAzaanTimers.py -h
 ```
 
 If a value is not correct, the script stops and writes the reason to the output. It does
-not change your crontab or `settings.ini`. The adhan jobs of the last correct run stay.
+not change your crontab or `adhan.toml`. The adhan jobs of the last correct run stay. These
+are not correct:
+* A file that is not [TOML](https://toml.io/). For example, a text must be in double
+  quotes: `method = "Karachi"`, not `method = Karachi`.
+* A table or a key that is not in the tables below, for example a key with a typo.
+* A value of the wrong type, for example `volume = "0"` or `enabled = "true"`. A number
+  has no quotes. `true` and `false` have no quotes.
+* A value that is not in the range of its setting, or an audio file that is not there.
 
-This is the `settings.ini` that the first run writes:
+### The file adhan.toml
+This is the `adhan.toml` that the first run writes:
 
-```
-[DEFAULT]
+```toml
+# The settings of the adhan clock. See README.md.
+# updateAzaanTimers.py writes this file again on each run, so comments are lost.
+
+[location]
 lat = 28.4792507
 lon = 77.535747
-method = Karachi
-asr = Standard
+method = "Karachi"
+asr = "Standard"
 
-[VOLUME]
-defaultazaanvolume = 0
-fajrazaanvolume = 0
-
-[FRIDAY]
-playsurahbaqarah = False
-surahvolume = 0
-
-[PLAYER]
-player = vlc
+[audio]
+player = "vlc"
 leadin_seconds = 0
+volume = 0
+file = "Adhan-Makkah1.mp3"
 
-[OFFSETS]
-fajr = 0
-dhuhr = 0
-asr = 0
-maghrib = 0
-isha = 0
+[prayers.fajr]
+file = "Adhan-fajr.mp3"
+volume = 0
+offset_minutes = 0
+enabled = true
 
-[ENABLED]
-fajr = true
-dhuhr = true
-asr = true
-maghrib = true
-isha = true
+[prayers.dhuhr]
+offset_minutes = 0
+enabled = true
 
-[AUDIO]
-default = Adhan-Makkah1.mp3
-fajr = Adhan-fajr.mp3
+[prayers.asr]
+offset_minutes = 0
+enabled = true
+
+[prayers.maghrib]
+offset_minutes = 0
+enabled = true
+
+[prayers.isha]
+offset_minutes = 0
+enabled = true
+
+[surah_baqarah]
+enabled = false
+volume = 0
 ```
 
+Only `lat`, `lon` and `method` are necessary. Each key that is not in the file has its
+default value. For example, this file is also correct. It plays Fajr more quietly, plays
+Maghrib 3 minutes later, turns off the Isha adhan and plays Surah Baqarah on Fridays:
+
+```toml
+[location]
+lat = 51.5072
+lon = -0.1276
+method = "MWL"
+asr = "Hanafi"
+
+[audio]
+leadin_seconds = 2
+
+[prayers.fajr]
+volume = -1000
+
+[prayers.maghrib]
+offset_minutes = 3
+
+[prayers.isha]
+enabled = false
+
+[surah_baqarah]
+enabled = true
+```
+
+The tables of `adhan.toml` are:
+* `[location]`: the location, the calculation method and the Asr school.
+* `[audio]`: the player, the lead-in, and the volume and file of each prayer that has no
+  volume or file of its own.
+* `[prayers.fajr]`, `[prayers.dhuhr]`, `[prayers.asr]`, `[prayers.maghrib]` and
+  `[prayers.isha]`: the settings of one prayer.
+* `[surah_baqarah]`: Surah Baqarah on Fridays.
+
 ### Location and calculation method
-| Command line | `settings.ini` | Values |
+| Command line | `adhan.toml` | Values |
 |---|---|---|
-| `--lat` | `[DEFAULT] lat` | -90 to 90. Required on the first run. |
-| `--lon` | `[DEFAULT] lon` | -180 to 180. Required on the first run. |
-| `--method` | `[DEFAULT] method` | One of the [calculation methods](#calculation-methods). Required on the first run. |
+| `--lat` | `[location] lat` | A number from -90 to 90. Required on the first run. |
+| `--lon` | `[location] lon` | A number from -180 to 180. Required on the first run. |
+| `--method` | `[location] method` | One of the [calculation methods](#calculation-methods), in quotes. Required on the first run. |
 
 ### Asr school
 The Asr school sets the method for the Asr time. The Hanafi school gives a later Asr time.
 
-| Command line | `settings.ini` | Values | Default |
+| Command line | `adhan.toml` | Values | Default |
 |---|---|---|---|
-| `--asr` | `[DEFAULT] asr` | `Standard` or `Hanafi` | `Standard` |
+| `--asr` | `[location] asr` | `"Standard"` or `"Hanafi"` | `"Standard"` |
 
 For example:
 
@@ -216,13 +259,13 @@ python3 ~/adhan/updateAzaanTimers.py --asr Hanafi
 You set the volume in millibels. `0` is the normal volume of the file. `1500` is loud.
 `-30000` is almost silent. The maximum gain is 8 times the normal volume (+18 dB).
 
-| Command line | `settings.ini` | Applies to | Default |
+| Command line | `adhan.toml` | Applies to | Default |
 |---|---|---|---|
-| `--fajr-azaan-volume` | `[VOLUME] fajrazaanvolume` | Fajr | `0` |
-| `--azaan-volume` | `[VOLUME] defaultazaanvolume` | Dhuhr, Asr, Maghrib and Isha | `0` |
+| `--fajr-azaan-volume` | `[prayers.fajr] volume` | Fajr | `0` |
+| `--azaan-volume` | `[audio] volume` | Each prayer that has no volume of its own | `0` |
+| none | `[prayers.dhuhr] volume`, and the same for `asr`, `maghrib` and `isha` | That prayer | The `[audio] volume` |
 
-If a volume in `settings.ini` is not a whole number, the script uses `0` and writes a
-warning to the output.
+A volume is a whole number.
 
 `playAzaan.sh` changes the millibels to the volume scale of the selected player. Thus the
 same numbers work as they did with omxplayer.
@@ -231,9 +274,9 @@ same numbers work as they did with omxplayer.
 An offset moves a prayer time by a number of minutes. A positive number makes the adhan
 later. A negative number makes it earlier.
 
-| Command line | `settings.ini` | Values | Default |
+| Command line | `adhan.toml` | Values | Default |
 |---|---|---|---|
-| `--fajr-offset`, `--dhuhr-offset`, `--asr-offset`, `--maghrib-offset`, `--isha-offset` | `[OFFSETS] fajr`, `dhuhr`, `asr`, `maghrib`, `isha` | A whole number of minutes, for example `5` or `-3` | `0` |
+| `--fajr-offset`, `--dhuhr-offset`, `--asr-offset`, `--maghrib-offset`, `--isha-offset` | `[prayers.fajr] offset_minutes`, and the same for `dhuhr`, `asr`, `maghrib` and `isha` | A whole number of minutes, for example `5` or `-3` | `0` |
 
 For example, this command plays the Isha adhan 10 minutes later:
 
@@ -246,9 +289,9 @@ You can turn the adhan of each prayer on or off. The script calculates the time 
 that is off, but it adds no job for that prayer. The output shows "(not scheduled)" after
 that prayer.
 
-| Command line | `settings.ini` | Values | Default |
+| Command line | `adhan.toml` | Values | Default |
 |---|---|---|---|
-| `--play-fajr` or `--no-play-fajr`, and the same for `dhuhr`, `asr`, `maghrib` and `isha` | `[ENABLED] fajr`, `dhuhr`, `asr`, `maghrib`, `isha` | `true` or `false` (also `yes`, `no`, `on`, `off`, `1`, `0`) | `true` |
+| `--play-fajr` or `--no-play-fajr`, and the same for `dhuhr`, `asr`, `maghrib` and `isha` | `[prayers.fajr] enabled`, and the same for `dhuhr`, `asr`, `maghrib` and `isha` | `true` or `false` | `true` |
 
 For example, this command turns off the Fajr adhan:
 
@@ -262,11 +305,11 @@ directory, or the full path of a file. The `media` directory has these adhan fil
 `Adhan-fajr.mp3`, `Adhan-Madinah.mp3`, `Adhan-Makkah1.mp3`, `Adhan-Makkah1-Dua.mp3`,
 `Adhan-Makkah2.mp3`, `Adhan-Makkah-Dua.mp3` and `Adhan-Turkish.mp3`.
 
-| Command line | `settings.ini` | Applies to | Default |
+| Command line | `adhan.toml` | Applies to | Default |
 |---|---|---|---|
-| `--audio` | `[AUDIO] default` | Each prayer that has no file of its own | `Adhan-Makkah1.mp3` |
-| `--fajr-audio` | `[AUDIO] fajr` | Fajr | `Adhan-fajr.mp3` |
-| `--dhuhr-audio`, `--asr-audio`, `--maghrib-audio`, `--isha-audio` | `[AUDIO] dhuhr`, `asr`, `maghrib`, `isha` | That prayer | The `default` file |
+| `--audio` | `[audio] file` | Each prayer that has no file of its own | `"Adhan-Makkah1.mp3"` |
+| `--fajr-audio` | `[prayers.fajr] file` | Fajr | `"Adhan-fajr.mp3"` |
+| `--dhuhr-audio`, `--asr-audio`, `--maghrib-audio`, `--isha-audio` | `[prayers.dhuhr] file`, and the same for `asr`, `maghrib` and `isha` | That prayer | The `[audio] file` |
 
 For example, this command plays `Adhan-Madinah.mp3` for Isha:
 
@@ -275,17 +318,17 @@ python3 ~/adhan/updateAzaanTimers.py --isha-audio Adhan-Madinah.mp3
 ```
 
 The script makes sure that the file of each prayer that is on is there and that it can read
-the file. A file name must not contain `%`, `#` or a control character. It must not start
-or end with a space.
+the file. A file name must not contain `%`, `#` or a control character. In `adhan.toml`, put
+the file name in double quotes. Write a `\` in a file name as `\\`.
 
 ### Lead-in of silence
 Some speakers go to sleep when they play no sound. Such a speaker can need some time to
 wake up, and then it does not play the start of the adhan. A lead-in plays seconds of
 silence before the adhan, so the speaker is awake when the adhan starts.
 
-| Command line | `settings.ini` | Values | Default |
+| Command line | `adhan.toml` | Values | Default |
 |---|---|---|---|
-| `--leadin-seconds` | `[PLAYER] leadin_seconds` | A whole number from `0` to `10` | `0` (no silence) |
+| `--leadin-seconds` | `[audio] leadin_seconds` | A whole number from `0` to `10` | `0` (no silence) |
 
 For example:
 
@@ -299,32 +342,34 @@ number after the player, for example `... 0 vlc 2 >> ...`.
 
 ## Play Surah Baqarah on Fridays
 The script can play Surah Al-Baqarah every Friday at 07:00. This feature is off by
-default. There is no command-line argument for it. To turn it on, edit the `[FRIDAY]`
-section of `settings.ini`:
+default. There is no command-line argument for it. To turn it on, edit the
+`[surah_baqarah]` table of `adhan.toml`:
 
-```
-[FRIDAY]
-playsurahbaqarah = True
-surahvolume = 0
+```toml
+[surah_baqarah]
+enabled = true
+volume = 0
 ```
 
-`surahvolume` is the volume in millibels, the same as the [adhan volume](#volume). The
-job plays `media/002-surah-baqarah-mishary.mp3` with the selected player and lead-in. The
-next run adds the job. In the output, the job looks like this:
+| `adhan.toml` | Values | Default |
+|---|---|---|
+| `[surah_baqarah] enabled` | `true` or `false` | `false` |
+| `[surah_baqarah] volume` | A whole number of millibels, the same as the [adhan volume](#volume) | `0` |
+
+The job plays `media/002-surah-baqarah-mishary.mp3` with the selected player and lead-in.
+When the Surah is on, the script makes sure that this file is there. The next run adds the
+job. In the output, the job looks like this:
 
 ```
 0 7 * * 5 /home/USER/adhan/playAzaan.sh /home/USER/adhan/media/002-surah-baqarah-mishary.mp3 0 vlc >> /home/USER/adhan/adhan.log 2>&1 # rpiAdhanClockJob
 ```
 
-If a value in `[FRIDAY]` is not correct, the script turns off the Surah, writes a warning
-to the output and writes the default values to `settings.ini`.
-
 ## Choosing the player
 The adhan can play through VLC (`cvlc`) or the PulseAudio `paplay`. VLC is the default.
 
-| Command line | `settings.ini` | Values | Default |
+| Command line | `adhan.toml` | Values | Default |
 |---|---|---|---|
-| `--player` | `[PLAYER] player` | `vlc` or `paplay` | `vlc` |
+| `--player` | `[audio] player` | `"vlc"` or `"paplay"` | `"vlc"` |
 
 For example:
 
