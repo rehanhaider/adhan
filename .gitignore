@@ -2,7 +2,7 @@
 *.log
 *.pyc
 adhan.log
-settings.ini
+adhan.toml
 __pycache__
 .settings
 before-hooks.d/*.sh
