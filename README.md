@@ -106,6 +106,8 @@ If the script runs correctly, the output is similar to this. `USER` is your user
 
 The "Cron jobs scheduled" part shows the jobs that the script added to your crontab:
 * The first 5 jobs play the 5 adhans at today's prayer times.
+* After them, there is one job for each [rule](#rules-play-a-file-at-a-time) that is on.
+  The first run has no rules.
 * The `15 3 * * *` job runs the script again at 03:15 every night. That run calculates the
   prayer times for the new day and replaces the adhan jobs. It also deletes the lines of
   `adhan.log` that are older than 30 days, so the log does not become too large.
@@ -194,15 +196,12 @@ enabled = true
 [prayers.isha]
 offset_minutes = 0
 enabled = true
-
-[surah_baqarah]
-enabled = false
-volume = 0
 ```
 
 Only `lat`, `lon` and `method` are necessary. Each key that is not in the file has its
 default value. For example, this file is also correct. It plays Fajr more quietly, plays
-Maghrib 3 minutes later, turns off the Isha adhan and plays Surah Baqarah on Fridays:
+Maghrib 3 minutes later, turns off the Isha adhan and plays Surah Baqarah on Fridays at
+07:00 (see [Rules](#rules-play-a-file-at-a-time)):
 
 ```toml
 [location]
@@ -223,8 +222,11 @@ offset_minutes = 3
 [prayers.isha]
 enabled = false
 
-[surah_baqarah]
-enabled = true
+[[rule]]
+name = "Surah Baqarah"
+days = ["fri"]
+at = "07:00"
+file = "002-surah-baqarah-mishary.mp3"
 ```
 
 The tables of `adhan.toml` are:
@@ -233,7 +235,8 @@ The tables of `adhan.toml` are:
   volume or file of its own.
 * `[prayers.fajr]`, `[prayers.dhuhr]`, `[prayers.asr]`, `[prayers.maghrib]` and
   `[prayers.isha]`: the settings of one prayer.
-* `[surah_baqarah]`: Surah Baqarah on Fridays.
+* `[[rule]]`: one rule, which plays a file at a time. There can be many rules. See
+  [Rules](#rules-play-a-file-at-a-time).
 
 ### Location and calculation method
 | Command line | `adhan.toml` | Values |
@@ -340,10 +343,88 @@ python3 ~/adhan/updateAzaanTimers.py --leadin-seconds 2
 there, it plays the adhan without the lead-in. With a lead-in, each adhan job has one more
 number after the player, for example `... 0 vlc 2 >> ...`.
 
-## Play Surah Baqarah on Fridays
-The script can play Surah Al-Baqarah every Friday at 07:00. This feature is off by
-default. There is no command-line argument for it. To turn it on, edit the
-`[surah_baqarah]` table of `adhan.toml`:
+## Rules: play a file at a time
+A rule plays an audio file at a time that you select: a fixed time, or a time before or
+after a prayer. A rule can play every day or only on some days. You write the rules in
+`adhan.toml`. There is no command-line argument for them. Each rule starts with the line
+`[[rule]]`:
+
+```toml
+[[rule]]
+name = "Surah Baqarah"
+days = ["fri"]
+at = "07:00"
+file = "002-surah-baqarah-mishary.mp3"
+volume = 0
+
+[[rule]]
+name = "Surah Kahf"
+days = ["fri"]
+at = "dhuhr - 30min"
+file = "018-kahf.mp3"
+
+[[rule]]
+name = "Evening dua"
+at = "maghrib + 10min"
+file = "dua.mp3"
+enabled = false
+```
+
+* The first rule plays Surah Al-Baqarah every Friday at 07:00. The `media` directory has
+  this file.
+* The second rule plays Surah Al-Kahf every Friday, 30 minutes before Dhuhr.
+* The third rule plays a dua every day, 10 minutes after Maghrib. It is off.
+
+`018-kahf.mp3` and `dua.mp3` are examples. They are not in the `media` directory. Before you
+use these rules, put your files in the `media` directory.
+
+| Key | Required | Values | Default |
+|---|---|---|---|
+| `name` | Yes | A name on one line. Each rule must have a different name. The output of the script shows it. | |
+| `at` | Yes | A fixed time, `"HH:MM"`, for example `"07:00"`. Or a time before or after a prayer, `"<prayer> - <N>min"` or `"<prayer> + <N>min"`, for example `"dhuhr - 30min"`. The prayer is `fajr`, `sunrise`, `dhuhr`, `asr`, `maghrib` or `isha`. | |
+| `days` | No | A list of days: `"mon"`, `"tue"`, `"wed"`, `"thu"`, `"fri"`, `"sat"`, `"sun"`. For example `["fri"]` or `["sat", "sun"]`. | Every day |
+| `file` | Yes | The name of a file in the `media` directory, or the full path of a file, the same as an [adhan file](#audio-files). | |
+| `volume` | No | A whole number of millibels, the same as the [adhan volume](#volume). | The `[audio] volume` |
+| `enabled` | No | `true` or `false`. A rule that is off has no job. | `true` |
+
+A rule plays its file in the same way as an adhan: with `playAzaan.sh`, the selected
+[player](#choosing-the-player) and [lead-in](#lead-in-of-silence), and the
+[hooks](#configuring-custom-actions-beforeafter-adhan).
+
+A time before or after a prayer starts from the time of the adhan of that prayer. Thus it
+includes the [offset](#offsets) of that prayer. It is also correct for a prayer that is
+[off](#turn-a-prayer-on-or-off). Sunrise has no adhan and no offset. Each night, the script
+calculates the time again, as it does for the adhan.
+
+The script stops and changes nothing if a rule is not correct, for example:
+* A key is not in the table above, or a value has the wrong type.
+* `at` is not a correct time, or it has an unknown prayer.
+* A day is not in the list above.
+* Two rules have the same name.
+* The file of a rule that is on is not there, or the script cannot read it.
+* A time before or after a prayer is before 00:00 or after 23:59. A rule plays on the
+  same day as its prayer.
+
+Each rule that is on has one job in the crontab. The job plays only on the days of the
+rule. For example, the Surah Baqarah rule gives this job:
+
+```
+0 7 * * 5 /home/USER/adhan/playAzaan.sh /home/USER/adhan/media/002-surah-baqarah-mishary.mp3 0 vlc >> /home/USER/adhan/adhan.log 2>&1 # rpiAdhanClockJob
+```
+
+### A rule before 03:15
+The script runs each night at 03:15. A job at a time before 03:15 plays after the next
+midnight, before the next run. Cron checks the day when it plays the job, so the rule
+plays on its own days only. The time of a rule before or after a prayer comes from the
+last run, the same as the time of the adhan. Thus a rule "fajr - 150min" at 03:01 on a
+Friday has the time of Thursday's Fajr. A prayer time changes by approximately 1 minute
+or less in one day. After a reboot, the script runs again and gives the same jobs.
+
+### The old [surah_baqarah] table
+Before [#43](https://github.com/rehanhaider/adhan/issues/43), Surah Baqarah had its own
+table in `adhan.toml`, `[surah_baqarah]`. The script does not read this table now. If
+your `adhan.toml` has it, the script stops and changes nothing. The output gives the rule
+that you must write in place of the table. For example, replace:
 
 ```toml
 [surah_baqarah]
@@ -351,18 +432,18 @@ enabled = true
 volume = 0
 ```
 
-| `adhan.toml` | Values | Default |
-|---|---|---|
-| `[surah_baqarah] enabled` | `true` or `false` | `false` |
-| `[surah_baqarah] volume` | A whole number of millibels, the same as the [adhan volume](#volume) | `0` |
+with:
 
-The job plays `media/002-surah-baqarah-mishary.mp3` with the selected player and lead-in.
-When the Surah is on, the script makes sure that this file is there. The next run adds the
-job. In the output, the job looks like this:
+```toml
+[[rule]]
+name = "Surah Baqarah"
+days = ["fri"]
+at = "07:00"
+file = "002-surah-baqarah-mishary.mp3"
+volume = 0
+```
 
-```
-0 7 * * 5 /home/USER/adhan/playAzaan.sh /home/USER/adhan/media/002-surah-baqarah-mishary.mp3 0 vlc >> /home/USER/adhan/adhan.log 2>&1 # rpiAdhanClockJob
-```
+If the table had `enabled = false`, delete it, or add `enabled = false` to the rule.
 
 ## Choosing the player
 The adhan can play through VLC (`cvlc`) or the PulseAudio `paplay`. VLC is the default.
