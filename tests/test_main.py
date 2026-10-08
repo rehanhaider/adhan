@@ -202,6 +202,17 @@ class MainTest(FakesTestCase):
         self.assertEqual(self.runMain(cron=cron), 0)
         self.assertEqual([line for line in cron.render().splitlines() if 'playAzaan.sh' in line], [])
 
+    def test_log_lists_the_jobs_under_a_correct_heading(self):
+        """C2: the log shows each job that the run added, under the heading
+        'Cron jobs scheduled' (#8)."""
+        cron = CronTab(tab='')
+        self.assertEqual(self.runMain(*FIRST_RUN, cron=cron), 0)
+        output = self.output.getvalue()
+        self.assertIn(' Cron jobs scheduled\n', output)
+        self.assertNotIn('Crob', output)
+        for job in cron.render().splitlines():
+            self.assertIn(job, output)
+
     def test_audio_file_at_an_absolute_path_is_played(self):
         """C2: an absolute path to a file that is there is played as it is,
         and the file of a prayer that is off is not checked (#10)."""
