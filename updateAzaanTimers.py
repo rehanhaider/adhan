@@ -681,7 +681,7 @@ def main(argv=None, settings_path=None, cron=None, today=None, utcOffset=None,
     # Add times to crontab
     log()
     log("---------------------------------")
-    log("Crob jobs scheduled")
+    log("Cron jobs scheduled")
     log("---------------------------------")
     for job in applyJobs(cron, buildJobs(times, settings, root_dir)):
         log(job)
