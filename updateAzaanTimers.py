@@ -55,19 +55,34 @@ MAX_LEADIN = 10
 DEFAULT_AUDIO = {'default': 'Adhan-Makkah1.mp3', 'fajr': 'Adhan-fajr.mp3'}
 DEFAULT_VOLUME = {'default': 0, 'fajr': 0}
 
-# The file of the Friday job (#9), in media/
+# The prayers that the time of a rule can follow (#43). Sunrise has no adhan.
+RULE_PRAYERS = ('fajr', 'sunrise', 'dhuhr', 'asr', 'maghrib', 'isha')
+
+# The days of a rule, in the order of date.weekday()
+DAYS = ('mon', 'tue', 'wed', 'thu', 'fri', 'sat', 'sun')
+
+# The time of a rule: "HH:MM", or "<prayer> + <N>min" or "<prayer> - <N>min"
+AT_PATTERN = re.compile(r'\s*(?:(\d\d):(\d\d)|([a-z]+)\s*([+-])\s*(\d+)\s*min)\s*',
+                        re.IGNORECASE)
+
+# The Friday job of before #43 is now a rule. The message for an old
+# [surah_baqarah] table gives this rule, with this file in media/.
 SURAH_BAQARAH_FILE = '002-surah-baqarah-mishary.mp3'
 
 # The tables and keys of adhan.toml, with the type of each value. A key that
-# is not here stops the script, so that a typo cannot lose a value.
+# is not here stops the script, so that a typo cannot lose a value. A list
+# with one type in it is a TOML array of that type, and a list with one
+# table in it is an array of tables, [[rule]].
 NUMBER = (int, float)
 SCHEMA = {
     'location': {'lat': NUMBER, 'lon': NUMBER, 'method': str, 'asr': str},
     'audio': {'player': str, 'leadin_seconds': int, 'volume': int, 'file': str},
     'prayers': {name: {'file': str, 'volume': int, 'offset_minutes': int, 'enabled': bool}
                 for name in PRAYERS},
-    'surah_baqarah': {'enabled': bool, 'volume': int},
+    'rule': [{'name': str, 'days': [str], 'at': str, 'file': str, 'volume': int,
+              'enabled': bool}],
 }
+RULE_REQUIRED = ('name', 'at', 'file')
 TYPE_NAMES = {NUMBER: 'a number', int: 'a whole number', bool: 'true or false',
               str: 'a text in double quotes'}
 
@@ -103,14 +118,28 @@ class ConfigError(Exception):
 Settings = namedtuple('Settings', [
     'lat', 'lon', 'method', 'asr',
     'volume',  # 'default' and the prayers that have their own volume, see prayerVolume()
-    'surah_baqarah', 'surah_volume', 'player',
+    'player',
     'leadin',  # seconds of silence before each adhan
     'offsets',  # minutes to add to each prayer time, by prayer name
     'enabled',  # True for each prayer that has a job, by prayer name
-    'audio'])  # 'default' and the prayers that have their own file, see audioFile()
+    'audio',  # 'default' and the prayers that have their own file, see audioFile()
+    'rules'])  # the [[rule]] tables, a tuple of Rule (#43)
 
-# One cron job. A day or weekday of None means every day ('*'). A job with
-# reboot runs once each time the Pi starts (@reboot), and has no time.
+# One [[rule]] of adhan.toml (#43). days is a tuple of DAYS, or None for every
+# day. A volume of None is the volume in [audio]. file is a file in media/
+# or an absolute path, as the file of a prayer is.
+Rule = namedtuple('Rule', ['name', 'at', 'days', 'file', 'volume', 'enabled'])
+
+# The time of a rule. With a prayer of None, minutes are the minutes after
+# 00:00. With a prayer, minutes are added to the time of that prayer.
+At = namedtuple('At', ['prayer', 'minutes'])
+
+# A rule that plays on a date, at a datetime.time, see ruleEvents()
+Event = namedtuple('Event', ['time', 'rule'])
+
+# One cron job. A day of None means every day ('*'). A weekday of None means
+# every day too, else it is a tuple of cron day numbers, 0 is Sunday. A job
+# with reboot runs once each time the Pi starts (@reboot), and has no time.
 Job = namedtuple('Job', ['hour', 'minute', 'day', 'weekday', 'command', 'reboot'],
                  defaults=(False,))
 
@@ -166,11 +195,12 @@ def resolveSettings(args, stored):
     Each value comes from the command line, then adhan.toml, then the
     default. Returns Settings, or raises ConfigError.
     """
+    if 'surah_baqarah' in stored:
+        raise ConfigError(surahBaqarahMessage(stored['surah_baqarah']))
     checkSchema(stored)
     location = stored.get('location', {})
     audio = stored.get('audio', {})
     prayers = stored.get('prayers', {})
-    surah = stored.get('surah_baqarah', {})
 
     def required(arg_value, key):
         value = location.get(key) if arg_value is None else arg_value
@@ -194,35 +224,75 @@ def resolveSettings(args, stored):
     return Settings(
         lat, lon, method, asr,
         volume=readVolume(args, audio, prayers),
-        surah_baqarah=surah.get('enabled', False),
-        surah_volume=surah.get('volume', 0),
         player=player,
         leadin=readLeadin(args, audio),
         offsets={name: prayerValue(args, f'{name}_offset', prayers, name, 'offset_minutes', 0)
                  for name in PRAYERS},
         enabled={name: prayerValue(args, f'{name}_enabled', prayers, name, 'enabled', True)
                  for name in PRAYERS},
-        audio=readAudio(args, audio, prayers))
+        audio=readAudio(args, audio, prayers),
+        rules=readRules(stored.get('rule', [])))
 
 
-def checkSchema(data, schema=SCHEMA, path=''):
+def checkSchema(data, schema=SCHEMA, path='', where=None):
     """Raise ConfigError on a key that is not in schema, or on a value of the
     wrong type, so that the whole file is correct before it is used."""
     for key, value in data.items():
         name = path + key
         if key not in schema:
-            where = f'[{path[:-1]}]' if path else 'the top level'
+            if where is None:
+                where = f'[{path[:-1]}]' if path else 'the top level'
             raise ConfigError(f"Unknown key '{name}' in {SETTINGS_FILE}, "
                               f"use one of these in {where}: {', '.join(schema)}")
-        expected = schema[key]
-        if isinstance(expected, dict):
-            if not isinstance(value, dict):
-                raise ConfigError(f"'{name}' in {SETTINGS_FILE} must be a table, [{name}]")
-            checkSchema(value, expected, name + '.')
-        # In Python, True is also an int, but in TOML true is not a number
-        elif isinstance(value, bool) != (expected is bool) or not isinstance(value, expected):
-            raise ConfigError(f"Invalid value {value!r} for '{name}' in {SETTINGS_FILE}, "
-                              f"use {TYPE_NAMES[expected]}")
+        checkValue(name, value, schema[key])
+
+
+def checkValue(name, value, expected):
+    # Raise ConfigError if value, at the key name, is not of the type expected
+    # in SCHEMA
+    if isinstance(expected, dict):
+        if not isinstance(value, dict):
+            raise ConfigError(f"'{name}' in {SETTINGS_FILE} must be a table, [{name}]")
+        checkSchema(value, expected, name + '.')
+    elif isinstance(expected, list):
+        item = expected[0]
+        if isinstance(item, dict):
+            if not isinstance(value, list):
+                raise ConfigError(f"'{name}' in {SETTINGS_FILE} must be a list of tables, "
+                                  f"each with the header [[{name}]]")
+            for number, table in enumerate(value, 1):
+                if not isinstance(table, dict):
+                    raise ConfigError(f"'{name}' in {SETTINGS_FILE} must be a list of tables, "
+                                      f"each with the header [[{name}]]")
+                checkSchema(table, item, f'{name}[{number}].',
+                            f'the [[{name}]] number {number}')
+        else:
+            if not isinstance(value, list):
+                raise ConfigError(f"Invalid value {value!r} for '{name}' in {SETTINGS_FILE}, "
+                                  f"use a list in square brackets, with {TYPE_NAMES[item]} for each value")
+            for number, element in enumerate(value, 1):
+                checkValue(f'{name}[{number}]', element, item)
+    # In Python, True is also an int, but in TOML true is not a number
+    elif isinstance(value, bool) != (expected is bool) or not isinstance(value, expected):
+        raise ConfigError(f"Invalid value {value!r} for '{name}' in {SETTINGS_FILE}, "
+                          f"use {TYPE_NAMES[expected]}")
+
+
+def surahBaqarahMessage(table):
+  # The error for a [surah_baqarah] table of before #43, with the rule that
+  # plays the same file at the same time and volume
+  rule = {'name': 'Surah Baqarah', 'days': ['fri'], 'at': '07:00',
+          'file': SURAH_BAQARAH_FILE, 'volume': 0}
+  if isinstance(table, dict):
+    volume = table.get('volume')
+    if isinstance(volume, int) and not isinstance(volume, bool):
+      rule['volume'] = volume
+    # The table was off when it had no enabled
+    if table.get('enabled') is not True:
+      rule['enabled'] = False
+  return (f"The [surah_baqarah] table is not used any more (#43), Surah Baqarah is a rule now.\n"
+          f"In {SETTINGS_FILE}, replace the [surah_baqarah] table with this rule:\n\n"
+          + tomlText({'rule': [rule]}))
 
 
 def prayerValue(args, arg_name, prayers, name, key, default):
@@ -299,6 +369,19 @@ def prayerVolume(volume, name):
   return volume.get(name, volume['default'])
 
 
+def checkFileName(value, label):
+  # Raise ConfigError on an audio file name that cannot be in a cron job
+  if not value:
+    raise ConfigError(f"No audio file for {label} in {SETTINGS_FILE}")
+  # cron changes % into a new line, and the crontab library reads # as the
+  # start of the comment, so the next update would not find the job. A
+  # control character such as a new line breaks the line of the job.
+  if any(char in '%#' or not char.isprintable() for char in value):
+    raise ConfigError(f"Invalid audio file {value!r} for {label}, a file name "
+                      f"cannot have %, # or a control character")
+  return value
+
+
 def readAudio(args, audio, prayers):
   # The adhan files (#10), from the command line, then adhan.toml, then
   # DEFAULT_AUDIO. Keep 'default', 'fajr' and the other prayers that have a
@@ -313,23 +396,85 @@ def readAudio(args, audio, prayers):
       value = stored[key] if stored[key] is not None else DEFAULT_AUDIO.get(key)
     if value is None:
       continue
-    if not value:
-      raise ConfigError(f"No audio file for {key} in {SETTINGS_FILE}")
-    # cron changes % into a new line, and the crontab library reads # as the
-    # start of the comment, so the next update would not find the job. A
-    # control character such as a new line breaks the line of the job.
-    if any(char in '%#' or not char.isprintable() for char in value):
-      raise ConfigError(f"Invalid audio file {value!r} for {key}, a file name "
-                        f"cannot have %, # or a control character")
-    files[key] = value
+    files[key] = checkFileName(value, key)
   return files
 
 
 def audioFile(audio, name, root_dir):
-  # The path of the adhan file of the prayer name. A name is a file in
-  # media/, and an absolute path is used as it is.
-  value = audio.get(name, audio['default'])
+  # The path of the adhan file of the prayer name
+  return mediaPath(audio.get(name, audio['default']), root_dir)
+
+
+def mediaPath(value, root_dir):
+  # The path of an audio file. A name is a file in media/, and an absolute
+  # path is used as it is.
   return value if os.path.isabs(value) else f"{root_dir}/media/{value}"
+
+
+def readRules(tables):
+  # The [[rule]] tables of adhan.toml as a tuple of Rule (#43). checkSchema()
+  # has checked the types.
+  rules = []
+  for number, table in enumerate(tables, 1):
+    for key in RULE_REQUIRED:
+      if key not in table:
+        raise ConfigError(f"The [[rule]] number {number} in {SETTINGS_FILE} has no {key}, "
+                          f"a rule must have: {', '.join(RULE_REQUIRED)}")
+    name = table['name']
+    # The name is in adhan.log, so it is one line
+    if not name.strip() or not name.isprintable():
+      raise ConfigError(f"Invalid name {name!r} for the [[rule]] number {number} in "
+                        f"{SETTINGS_FILE}, use a name on one line")
+    if any(rule.name == name for rule in rules):
+      raise ConfigError(f"Two rules in {SETTINGS_FILE} have the name '{name}', "
+                        f"give each rule a different name")
+    rules.append(Rule(name, parseAt(table['at'], name), readDays(table.get('days'), name),
+                      checkFileName(table['file'], f"the rule '{name}'"),
+                      table.get('volume'), table.get('enabled', True)))
+  return tuple(rules)
+
+
+def parseAt(text, name):
+  # The At of the time text of the rule name, or raise ConfigError
+  match = AT_PATTERN.fullmatch(text)
+  if not match:
+    raise ConfigError(f"Invalid time '{text}' for the rule '{name}', use \"HH:MM\", for "
+                      f"example \"07:00\", or a prayer and minutes, for example "
+                      f"\"dhuhr - 30min\" or \"maghrib + 10min\"")
+  hour, minute, prayer, sign, minutes = match.groups()
+  if prayer is None:
+    if int(hour) > 23 or int(minute) > 59:
+      raise ConfigError(f"Invalid time '{text}' for the rule '{name}', "
+                        f"use a time from \"00:00\" to \"23:59\"")
+    return At(None, int(hour) * 60 + int(minute))
+  if prayer.lower() not in RULE_PRAYERS:
+    raise ConfigError(f"Unknown prayer '{prayer}' in the time '{text}' of the rule '{name}', "
+                      f"use one of: {', '.join(RULE_PRAYERS)}")
+  return At(prayer.lower(), int(minutes) * (-1 if sign == '-' else 1))
+
+
+def atText(at):
+  # The At as the text of 'at' in adhan.toml
+  if at.prayer is None:
+    return f'{at.minutes // 60:02d}:{at.minutes % 60:02d}'
+  return f"{at.prayer} {'-' if at.minutes < 0 else '+'} {abs(at.minutes)}min"
+
+
+def readDays(days, name):
+  # The days of the rule name as a tuple in the order of DAYS, or None for
+  # every day. Accept any case (Fri) but return the canonical name.
+  if days is None:
+    return None
+  if not days:
+    raise ConfigError(f"The rule '{name}' has no day in days, give at least one day, "
+                      f"or delete days to play it every day")
+  given = set()
+  for day in days:
+    if day.strip().lower() not in DAYS:
+      raise ConfigError(f"Unknown day '{day}' in the rule '{name}', "
+                        f"use one of: {', '.join(DAYS)}")
+    given.add(day.strip().lower())
+  return tuple(day for day in DAYS if day in given)
 
 
 def settingsData(settings):
@@ -343,14 +488,30 @@ def settingsData(settings):
             table['volume'] = settings.volume[name]
         table['offset_minutes'] = settings.offsets[name]
         table['enabled'] = settings.enabled[name]
-    return {
+    data = {
         'location': {'lat': settings.lat, 'lon': settings.lon,
                      'method': settings.method, 'asr': settings.asr},
         'audio': {'player': settings.player, 'leadin_seconds': settings.leadin,
                   'volume': settings.volume['default'], 'file': settings.audio['default']},
         'prayers': prayers,
-        'surah_baqarah': {'enabled': settings.surah_baqarah, 'volume': settings.surah_volume},
     }
+    if settings.rules:
+        data['rule'] = [ruleData(rule) for rule in settings.rules]
+    return data
+
+
+def ruleData(rule):
+    """The Rule as a [[rule]] table of adhan.toml, with the keys of the issue
+    in their order. A rule writes only the days and volume that it has."""
+    table = {'name': rule.name}
+    if rule.days is not None:
+        table['days'] = list(rule.days)
+    table['at'] = atText(rule.at)
+    table['file'] = rule.file
+    if rule.volume is not None:
+        table['volume'] = rule.volume
+    table['enabled'] = rule.enabled
+    return table
 
 
 def settingsText(settings):
@@ -362,27 +523,43 @@ def tomlText(data):
     """data, a dict of tables, as TOML text that tomllib reads back as data.
 
     The standard library of Python can read TOML but not write it. This small
-    writer knows only what adhan.toml needs: tables, and text, whole numbers,
-    floats and booleans in them. All the TOML that the app writes comes from
-    here, so tomlkit can replace this function after #29.
+    writer knows only what adhan.toml needs: tables, arrays of tables
+    ([[rule]], a list of dicts), and text, whole numbers, floats, booleans
+    and lists of them in the tables. All the TOML that the app writes comes
+    from here, so tomlkit can replace this function after #29.
     """
     blocks = []
 
-    def table(name, values):
+    def table(name, values, array=False):
         lines = [f'{tomlKey(key)} = {tomlValue(value)}'
-                 for key, value in values.items() if not isinstance(value, dict)]
-        # A table that has only tables in it needs no header of its own
-        if lines or not values:
-            blocks.append('\n'.join([f'[{name}]'] + lines) + '\n')
+                 for key, value in values.items() if not isTable(value)]
+        # A table that has only tables in it needs no header of its own. Each
+        # table of an array needs its header, which starts a new table.
+        if lines or not values or array:
+            header = f'[[{name}]]' if array else f'[{name}]'
+            blocks.append('\n'.join([header] + lines) + '\n')
         for key, value in values.items():
             if isinstance(value, dict):
                 table(f'{name}.{tomlKey(key)}', value)
+            elif isTable(value):
+                for item in value:
+                    table(f'{name}.{tomlKey(key)}', item, array=True)
 
     for key, value in data.items():
-        if not isinstance(value, dict):
+        if isinstance(value, dict):
+            table(tomlKey(key), value)
+        elif isTable(value):
+            for item in value:
+                table(tomlKey(key), item, array=True)
+        else:
             raise TypeError(f'{key}: the top level of adhan.toml has only tables')
-        table(tomlKey(key), value)
     return '\n'.join(blocks)
+
+
+def isTable(value):
+    # A dict is a table, and a list of dicts is an array of tables
+    return isinstance(value, dict) or (
+        isinstance(value, list) and bool(value) and all(isinstance(item, dict) for item in value))
 
 
 def tomlKey(key):
@@ -408,15 +585,18 @@ def tomlValue(value):
             else f'\\u{ord(char):04x}' if ord(char) < 0x20 or ord(char) == 0x7f
             else char
             for char in value) + '"'
+    if isinstance(value, list):
+        return '[' + ', '.join(tomlValue(item) for item in value) + ']'
     raise TypeError(f'{value!r} is not a type that the app writes to adhan.toml')
 
 
 def prayerTimes(lat, lon, method, date, utcOffset, offsets=None, asr=DEFAULT_ASR):
-    """The five prayer times of one day as 'HH:MM', by prayer name.
+    """The five prayer times and the sunrise of one day as 'HH:MM', by name.
 
     utcOffset is in hours and includes daylight saving time. offsets has the
-    minutes to add to each prayer (#12). asr is the Asr school (#11). Raises ConfigError if a time cannot
-    be calculated.
+    minutes to add to each prayer (#12). asr is the Asr school (#11). The
+    sunrise has no adhan, but a rule can follow it (#43). Raises ConfigError
+    if a time cannot be calculated.
     """
     calculator = PrayTimes(method)
     # Always set asr: PrayTimes keeps its settings in the class, so a Hanafi
@@ -431,15 +611,51 @@ def prayerTimes(lat, lon, method, date, utcOffset, offsets=None, asr=DEFAULT_ASR
     # at extreme latitudes. Stop before rescheduling anything rather than
     # crashing part way through, so the crontab that is already installed
     # keeps working.
-    invalid = [name for name in PRAYERS if ':' not in times[name]]
+    invalid = [name for name in RULE_PRAYERS if ':' not in times[name]]
     if invalid:
         raise ConfigError(f"Could not calculate a time for: {', '.join(invalid)}\n"
                           "Existing cron jobs have been left untouched.")
-    return {name: times[name] for name in PRAYERS}
+    return {name: times[name] for name in RULE_PRAYERS}
 
 
-def buildJobs(times, settings, root_dir):
-    """The cron jobs for the prayer times, and the jobs that keep them current."""
+def ruleTime(rule, times):
+    """The time of rule as a datetime.time, with times as prayerTimes() gives
+    them, after the offsets of the prayers.
+
+    Raises ConfigError if the time is before 00:00 or after 23:59.
+    """
+    at = rule.at
+    minutes = at.minutes
+    if at.prayer is not None:
+        hour, minute = times[at.prayer].split(':')
+        minutes += int(hour) * 60 + int(minute)
+        if not 0 <= minutes < 24 * 60:
+            raise ConfigError(
+                f"The time of the rule '{rule.name}' is {atText(at)}, and {at.prayer} is at "
+                f"{times[at.prayer]}, so the rule is {'before 00:00' if minutes < 0 else 'after 23:59'}. "
+                f"A rule must play on the same day as its prayer, change its minutes")
+    return datetime.time(minutes // 60, minutes % 60)
+
+
+def ruleEvents(date, rules, times):
+    """The rules that play on date, each with its time, as Events (#43).
+
+    times are the prayer times of date, as prayerTimes() gives them. This
+    does not know cron, the clock or the files: buildJobs() makes the cron
+    jobs from the events, and a service (#17) can use them as they are.
+    Raises ConfigError if the time of a rule is not in the day.
+    """
+    day = DAYS[date.weekday()]
+    return [Event(ruleTime(rule, times), rule) for rule in rules
+            if rule.enabled and (rule.days is None or day in rule.days)]
+
+
+def buildJobs(times, settings, root_dir, date):
+    """The cron jobs for the prayer times of date and the rules, and the jobs
+    that keep them current.
+
+    Raises ConfigError if the time of a rule is not in the day.
+    """
     # Playback goes through playAzaan.sh, which applies the configured volume,
     # runs the before/after hooks and plays the file with the configured player.
     strPlayer = f"{root_dir}/playAzaan.sh"
@@ -461,10 +677,23 @@ def buildJobs(times, settings, root_dir):
         command = play(audioFile(settings.audio, name, root_dir),
                        prayerVolume(settings.volume, name))
         jobs.append(Job(int(hour), int(minute), None, None, command))
-    if settings.surah_baqarah:
-        jobs.append(Job(7, 0, None, 5,
-                        play(f"{root_dir}/media/{SURAH_BAQARAH_FILE}",
-                             settings.surah_volume)))
+    # One job for each rule that is on (#43), on the days of the week on which
+    # ruleEvents() plays it. Its time comes from the prayer times of date, as
+    # the time of each adhan does, and the update renews it each night. Cron
+    # checks the day when it plays the job, so a job before 03:15, which plays
+    # after the next midnight, still plays on its own days only.
+    plays = {}  # rule name: (Event, cron day numbers)
+    for day in (date + datetime.timedelta(days=n) for n in range(7)):
+        for event in ruleEvents(day, settings.rules, times):
+            plays.setdefault(event.rule.name, (event, []))[1].append(day.isoweekday() % 7)
+    for rule in settings.rules:
+        if rule.name not in plays:
+            continue
+        event, weekdays = plays[rule.name]
+        volume = settings.volume['default'] if rule.volume is None else rule.volume
+        jobs.append(Job(event.time.hour, event.time.minute, None,
+                        tuple(sorted(weekdays)) if len(weekdays) < 7 else None,
+                        play(mediaPath(rule.file, root_dir), volume)))
     # Run this script again overnight. It also deletes the old lines of the log.
     jobs.append(Job(3, 15, None, None, f"python3 {root_dir}/updateAzaanTimers.py {strLog}"))
     # And after each reboot, as the Pi can be off at 03:15. That update waits
@@ -538,12 +767,12 @@ def checkPlayer(player):
 def checkAudio(settings, root_dir):
   # Stop before the save on an adhan file that is not there or cannot be
   # read, so that a typo cannot silence an adhan (#10). playAzaan.sh would
-  # only find it at the time of the prayer. Only the prayers that are on
-  # play a file, and the Surah Baqarah file only when it is on.
+  # only find it at the time of the prayer. Only the prayers and the rules
+  # that are on play a file (#43).
   files = [(name, audioFile(settings.audio, name, root_dir))
            for name in PRAYERS if settings.enabled[name]]
-  if settings.surah_baqarah:
-    files.append(('Surah Baqarah', f"{root_dir}/media/{SURAH_BAQARAH_FILE}"))
+  files += [(f"the rule '{rule.name}'", mediaPath(rule.file, root_dir))
+            for rule in settings.rules if rule.enabled]
   for name, path in files:
     if not (os.path.isfile(path) and os.access(path, os.R_OK)):
       raise ConfigError(f"The audio file for {name} is not there or cannot be read: {path}")
@@ -607,7 +836,7 @@ def applyJobs(cron, jobs):
             if job.day is not None:
                 item.day.on(job.day)
             if job.weekday is not None:
-                item.dow.on(job.weekday)
+                item.dow.on(*job.weekday)
         added.append(item)
     return added
 
@@ -701,6 +930,9 @@ def main(argv=None, settings_path=None, cron=None, today=None, utcOffset=None,
         # cannot be calculated is not saved for the nightly update (#31)
         times = prayerTimes(settings.lat, settings.lon, settings.method, today, utcOffset,
                             settings.offsets, settings.asr)
+        # And the jobs, so a rule with a time that is not in the day is not
+        # saved either (#43)
+        jobs = buildJobs(times, settings, root_dir, today)
         saveSettings(settings, settings_path)
     except ConfigError as err:
         log(err)
@@ -726,13 +958,25 @@ def main(argv=None, settings_path=None, cron=None, today=None, utcOffset=None,
     log("---------------------------------")
     if not any(settings.enabled.values()):
         log(f"All five prayers are off in {SETTINGS_FILE}, so no adhan is scheduled.")
+    if settings.rules:
+        log()
+        log("---------------------------------")
+        log("Rules")
+        log("---------------------------------")
+        for rule in settings.rules:
+            when = atText(rule.at)
+            if rule.enabled and rule.at.prayer is not None:
+                when += f" = {ruleTime(rule, times):%H:%M} hrs"
+            days = 'every day' if rule.days is None else 'on ' + ', '.join(rule.days)
+            log(f"{rule.name}: {when}, {days}" + ('' if rule.enabled else ' (not scheduled)'))
+        log("---------------------------------")
 
     # Add times to crontab
     log()
     log("---------------------------------")
     log("Cron jobs scheduled")
     log("---------------------------------")
-    for job in applyJobs(cron, buildJobs(times, settings, root_dir)):
+    for job in applyJobs(cron, jobs):
         log(job)
     log("---------------------------------")
 
