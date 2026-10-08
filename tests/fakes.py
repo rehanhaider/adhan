@@ -1,6 +1,6 @@
 """Shared fakes for the tests.
 
-No test may read or write the real user crontab, the real settings.ini, the
+No test may read or write the real user crontab, the real adhan.toml, the
 real adhan.log or the speakers. The helpers here give the tests temporary
 folders, a fake crontab command, a fake cvlc and a fixed date.
 
@@ -15,7 +15,7 @@ import tempfile
 from os.path import dirname, abspath, join as pathjoin
 
 ROOT = dirname(dirname(abspath(__file__)))
-REAL_SETTINGS = pathjoin(ROOT, 'settings.ini')
+REAL_SETTINGS = pathjoin(ROOT, 'adhan.toml')
 REAL_LOG = pathjoin(ROOT, 'adhan.log')
 
 # So that the tests can import updateAzaanTimers from any folder
@@ -108,7 +108,7 @@ def fileState(path):
 
 
 def guardRealSettings(test):
-    """Fail the test if the real settings.ini or adhan.log changes while it runs."""
+    """Fail the test if the real adhan.toml or adhan.log changes while it runs."""
     for path in (REAL_SETTINGS, REAL_LOG):
         before = fileState(path)
         test.addCleanup(lambda path=path, before=before: test.assertEqual(
@@ -167,7 +167,7 @@ class App:
         # The update checks that the adhan files are there (#10). Nothing writes
         # to them, so a link to the real folder is enough.
         os.symlink(pathjoin(ROOT, 'media'), pathjoin(self.root, 'media'))
-        self.settings_path = pathjoin(self.root, 'settings.ini')
+        self.settings_path = pathjoin(self.root, 'adhan.toml')
         self.tab = pathjoin(self.root, 'user.crontab')
         with open(self.tab, 'w') as fh:
             fh.write(crontab)

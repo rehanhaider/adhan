@@ -1,11 +1,11 @@
 """Characterization test: a full run of updateAzaanTimers.py as a command.
 
 It runs the script as cron does, in a temporary copy of the app, with the
-default values of main(): the command line, the settings.ini next to the
-script, the user crontab and the system timezone. The expected crontab and
-settings.ini were recorded from the script before the refactor into a core
-and a shell (#16). #7 removed the job that cleared the log every month. #15
-added the update after a reboot. The tests in test_main.py cover the other
+default values of main(): the command line, the adhan.toml next to the
+script, the user crontab and the system timezone. The expected crontab was
+recorded from the script before the refactor into a core and a shell (#16).
+#7 removed the job that cleared the log every month. #15 added the update
+after a reboot. #42 moved the settings from settings.ini to adhan.toml. The tests in test_main.py cover the other
 cases through main() with fakes.
 """
 
@@ -22,42 +22,55 @@ FIRST_RUN = ('--lat', '12.8369', '--lon', '77.4089', '--method', 'Karachi',
 # Bengaluru with Karachi on 2026-01-15 in UTC +5:30, as the script gave it
 PRAYER_TIMES = (('5', '31'), ('12', '30'), ('15', '47'), ('18', '13'), ('19', '28'))
 
-FIRST_RUN_SETTINGS = '''[DEFAULT]
+# The adhan.toml that the first run writes. Before #42 the settings were in
+# settings.ini, with the same values.
+FIRST_RUN_SETTINGS = '''# The settings of the adhan clock. See README.md.
+# updateAzaanTimers.py writes this file again on each run, so comments are lost.
+
+[location]
+lat = 12.8369
+lon = 77.4089
+method = "Karachi"
+asr = "Standard"
+
+[audio]
+player = "vlc"
+leadin_seconds = 0
+volume = 500
+file = "Adhan-Makkah1.mp3"
+
+[prayers.fajr]
+file = "Adhan-fajr.mp3"
+volume = -500
+offset_minutes = 0
+enabled = true
+
+[prayers.dhuhr]
+offset_minutes = 0
+enabled = true
+
+[prayers.asr]
+offset_minutes = 0
+enabled = true
+
+[prayers.maghrib]
+offset_minutes = 0
+enabled = true
+
+[prayers.isha]
+offset_minutes = 0
+enabled = true
+
+[surah_baqarah]
+enabled = false
+volume = 0
+'''
+
+# A settings.ini of before #42. The app does not read it.
+OLD_SETTINGS_INI = '''[DEFAULT]
 lat = 12.8369
 lon = 77.4089
 method = Karachi
-asr = Standard
-
-[VOLUME]
-defaultazaanvolume = 500
-fajrazaanvolume = -500
-
-[FRIDAY]
-playsurahbaqarah = False
-surahvolume = 0
-
-[PLAYER]
-player = vlc
-leadin_seconds = 0
-
-[OFFSETS]
-fajr = 0
-dhuhr = 0
-asr = 0
-maghrib = 0
-isha = 0
-
-[ENABLED]
-fajr = true
-dhuhr = true
-asr = true
-maghrib = true
-isha = true
-
-[AUDIO]
-default = Adhan-Makkah1.mp3
-fajr = Adhan-fajr.mp3
-
 '''
 
 
@@ -106,19 +119,29 @@ class FullRunTest(unittest.TestCase):
         self.assertEqual(self.app.settings().decode(), FIRST_RUN_SETTINGS)
 
     def test_an_error_is_in_the_log_after_the_start_of_its_run(self):
-        """C4: a run that fails on a bad settings.ini has a traceback with no
-        timestamp. It comes after the first line of its own run, so the
-        prune keeps it with that run (#7)."""
-        with open(self.app.settings_path, 'w') as fh:
-            fh.write('lat = 12.8369\n')  # no [DEFAULT] header
+        """C4: an error that argparse writes has no timestamp. It comes after
+        the first line of its own run, so the prune keeps it with that run (#7)."""
         log_path = f'{self.app.root}/adhan.log'
         with open(log_path, 'a') as log:
-            result = self.app.run(today=TODAY, log=log)
+            result = self.app.run('--lat', 'north', today=TODAY, log=log)
         self.assertNotEqual(result.returncode, 0)
         with open(log_path) as fh:
             lines = fh.read().splitlines()
         self.assertTrue(lines[0].startswith('2026-01-15 12:00:00 '), lines)
-        self.assertIn('Traceback (most recent call last):', lines[1:])
+        self.assertTrue(any('invalid float value' in line for line in lines[1:]), lines)
+
+    def test_settings_ini_is_not_read(self):
+        """C4: adhan.toml replaces settings.ini (#42). A settings.ini is not
+        read and does not change, and the run without adhan.toml stops."""
+        ini = f'{self.app.root}/settings.ini'
+        with open(ini, 'w') as fh:
+            fh.write(OLD_SETTINGS_INI)
+        result = self.app.run(today=TODAY)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn('--lat', result.stdout)
+        self.assertEqual(self.app.crontab(), USER_JOB)
+        self.assertIsNone(self.app.settings())
+        self.assertEqual(fakes.readBytes(ini), OLD_SETTINGS_INI.encode())
 
 
 if __name__ == '__main__':

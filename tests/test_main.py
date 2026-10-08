@@ -1,6 +1,6 @@
 """Integration tests for main() with fakes (#16).
 
-main() gets a settings.ini and an adhan.log in a temporary folder, an
+main() gets an adhan.toml and an adhan.log in a temporary folder, an
 in-memory crontab, a fixed date and UTC offset, and a PATH with only a fake
 cvlc. Each test names
 the promise (C1-C6 in #16) that it protects.
@@ -25,6 +25,9 @@ USER_JOB = '@daily /home/user/backup.sh'
 OLD_CLEAR_LOG_JOB = '@monthly truncate -s 0 /home/pi/adhan/adhan.log 2>&1 # rpiAdhanClockJob'
 FIRST_RUN = ('--lat', '12.8369', '--lon', '77.4089', '--method', 'Karachi',
              '--azaan-volume', '500')
+# The [prayers.fajr] table that the first run writes
+FAJR = ('[prayers.fajr]\nfile = "Adhan-fajr.mp3"\nvolume = 0\noffset_minutes = 0\n'
+        'enabled = true\n')
 
 
 class FakesTestCase(unittest.TestCase):
@@ -33,7 +36,7 @@ class FakesTestCase(unittest.TestCase):
     def setUp(self):
         fakes.guardRealSettings(self)
         folder = fakes.tempDir(self)
-        self.settings_path = pathjoin(folder, 'settings.ini')
+        self.settings_path = pathjoin(folder, 'adhan.toml')
         self.log_path = pathjoin(folder, 'adhan.log')
         self.bin = pathjoin(folder, 'bin')
         self.empty_bin = pathjoin(folder, 'empty-bin')
@@ -70,6 +73,12 @@ class FakesTestCase(unittest.TestCase):
         with open(self.settings_path, 'wb') as fh:
             fh.write(data)
 
+    def editSettings(self, old, new):
+        """Change the text old in adhan.toml to new, as a user does by hand."""
+        text = self.settings().decode()
+        self.assertIn(old, text)
+        self.writeSettings(text.replace(old, new, 1).encode())
+
 
 class MainTest(FakesTestCase):
 
@@ -78,11 +87,12 @@ class MainTest(FakesTestCase):
         first = CronTab(tab='')
         self.assertEqual(self.runMain(*FIRST_RUN, cron=first), 0)
         self.assertIn(' 500 vlc ', first.render())
+        self.assertIn(FAJR.encode(), self.settings())
         nightly = CronTab(tab='')
         self.assertEqual(self.runMain(cron=nightly), 0)
         self.assertEqual(nightly.render(), first.render())
-        # An offset in settings.ini moves its prayer only (#12)
-        self.writeSettings(self.settings().replace(b'\nfajr = 0\n', b'\nfajr = 5\n'))
+        # An offset in adhan.toml moves its prayer only (#12)
+        self.editSettings(FAJR, FAJR.replace('offset_minutes = 0', 'offset_minutes = 5'))
         offset = CronTab(tab='')
         self.assertEqual(self.runMain(cron=offset), 0)
         self.assertEqual(offset.render(), first.render().replace(
@@ -91,39 +101,53 @@ class MainTest(FakesTestCase):
         # An offset on the command line is saved for the nightly update
         self.assertEqual(self.runMain('--fajr-offset', '0', cron=offset), 0)
         self.assertEqual(offset.render(), first.render())
-        self.assertIn(b'\nfajr = 0\n', self.settings())
-        # A prayer that is off in settings.ini has no job (#13)
-        self.writeSettings(self.settings().replace(b'\nfajr = true\n', b'\nfajr = false\n'))
+        self.assertIn(FAJR.encode(), self.settings())
+        # A prayer that is off in adhan.toml has no job (#13)
+        self.editSettings(FAJR, FAJR.replace('enabled = true', 'enabled = false'))
         off = CronTab(tab='')
         self.assertEqual(self.runMain(cron=off), 0)
         self.assertEqual(off.render(), ''.join(
             line for line in first.render().splitlines(keepends=True)
             if not line.startswith('31 5 * * * ')))
         self.assertIn('Fajr:    05:31 hrs (not scheduled)', self.output.getvalue())
-        # The audio file of a prayer in settings.ini changes its job only (#10)
-        self.writeSettings(self.settings()
-                           .replace(b'\nfajr = false\n', b'\nfajr = true\n')
-                           .replace(b'fajr = Adhan-fajr.mp3\n',
-                                    b'fajr = Adhan-fajr.mp3\nisha = Adhan-Madinah.mp3\n'))
+        # The audio file of a prayer in adhan.toml changes its job only (#10)
+        self.editSettings(FAJR.replace('enabled = true', 'enabled = false'), FAJR)
+        self.editSettings('[prayers.isha]\n', '[prayers.isha]\nfile = "Adhan-Madinah.mp3"\n')
         audio = CronTab(tab='')
         self.assertEqual(self.runMain(cron=audio), 0)
         self.assertEqual(audio.render(), ''.join(
             line.replace('Adhan-Makkah1.mp3', 'Adhan-Madinah.mp3') if line.startswith('28 19 ')
             else line for line in first.render().splitlines(keepends=True)))
-        self.assertIn(b'isha = Adhan-Madinah.mp3', self.settings())
-        # Hanafi in settings.ini moves Asr only, and the log shows it (#11)
-        self.writeSettings(self.settings().replace(b'asr = Standard', b'asr = hanafi'))
+        self.assertIn(b'[prayers.isha]\nfile = "Adhan-Madinah.mp3"\n', self.settings())
+        # Hanafi in adhan.toml moves Asr only, and the log shows it (#11)
+        self.editSettings('asr = "Standard"', 'asr = "hanafi"')
         hanafi = CronTab(tab='')
         self.assertEqual(self.runMain(cron=hanafi), 0)
         self.assertEqual(hanafi.render(), audio.render().replace('47 15 * * * ', '37 16 * * * '))
         self.assertIn('Asr school: Hanafi', self.output.getvalue())
-        self.assertIn(b'asr = Hanafi', self.settings())
-        # A lead-in in settings.ini goes to each adhan job, and the log shows it (#14)
-        self.writeSettings(self.settings().replace(b'leadin_seconds = 0', b'leadin_seconds = 2'))
+        self.assertIn(b'asr = "Hanafi"', self.settings())
+        # A lead-in in adhan.toml goes to each adhan job, and the log shows it (#14)
+        self.editSettings('leadin_seconds = 0', 'leadin_seconds = 2')
         leadin = CronTab(tab='')
         self.assertEqual(self.runMain(cron=leadin), 0)
         self.assertEqual(leadin.render(), hanafi.render().replace(' vlc >> ', ' vlc 2 >> '))
         self.assertIn('Lead-in:    2 seconds', self.output.getvalue())
+        # The volume of a prayer in adhan.toml changes its job only
+        self.editSettings('[prayers.dhuhr]\n', '[prayers.dhuhr]\nvolume = -300\n')
+        volume = CronTab(tab='')
+        self.assertEqual(self.runMain(cron=volume), 0)
+        self.assertEqual(volume.render(), ''.join(
+            line.replace(' 500 vlc ', ' -300 vlc ') if line.startswith('30 12 ')
+            else line for line in leadin.render().splitlines(keepends=True)))
+        # Surah Baqarah in adhan.toml adds the job on Friday at 07:00 (#9)
+        self.editSettings('[surah_baqarah]\nenabled = false\nvolume = 0\n',
+                          '[surah_baqarah]\nenabled = true\nvolume = -100\n')
+        surah = CronTab(tab='')
+        self.assertEqual(self.runMain(cron=surah), 0)
+        friday = [line for line in surah.render().splitlines() if line.startswith('0 7 * * 5 ')]
+        self.assertEqual(len(friday), 1)
+        self.assertIn('/media/002-surah-baqarah-mishary.mp3 -100 vlc 2 >> ', friday[0])
+        self.assertEqual(surah.render().replace(friday[0] + '\n', ''), volume.render())
 
     def test_second_run_replaces_our_jobs_and_keeps_the_users(self):
         """C3: a second run does not add jobs, and other jobs stay. The old
@@ -142,39 +166,52 @@ class MainTest(FakesTestCase):
         self.assertEqual(len([line for line in lines if 'truncate' in line]), 0)
 
     def test_bad_input_changes_nothing(self):
-        """C4: exit with an error, and the crontab and settings.ini stay."""
+        """C4: exit with an error, and the crontab and adhan.toml stay."""
         cron = CronTab(tab=USER_JOB + '\n')
         self.assertEqual(self.runMain(*FIRST_RUN, cron=cron), 0)
         good = self.settings().decode()
+
+        def fajr(old, new):
+            return good.replace(FAJR, FAJR.replace(old, new))
+
         cases = [
             ('latitude nan', ('--lat', 'nan'), good),
             ('latitude inf', ('--lat', 'inf'), good),
             ('latitude 91', ('--lat', '91'), good),
             ('longitude 181', ('--lon', '181'), good),
-            ('unknown method Foo (#26)', (), good.replace('Karachi', 'Foo')),
-            ('unsupported player', (), good.replace('player = vlc', 'player = winamp')),
+            ('stored latitude nan', (), good.replace('lat = 12.8369', 'lat = nan')),
+            ('unknown method Foo (#26)', (), good.replace('"Karachi"', '"Foo"')),
+            ('unsupported player', (), good.replace('player = "vlc"', 'player = "winamp"')),
             ('latitude missing', (), good.replace('lat = 12.8369\n', '')),
             ('longitude missing', (), good.replace('lon = 77.4089\n', '')),
-            ('method missing', (), good.replace('method = Karachi\n', '')),
+            ('method missing', (), good.replace('method = "Karachi"\n', '')),
+            ('not TOML, a text with no quotes', (),
+             good.replace('method = "Karachi"', 'method = Karachi')),
+            ('not TOML, the old settings.ini', (), '[DEFAULT]\nlat = 12.8369\n'),
+            ('not TOML, a table two times', (), good + '[location]\n'),
+            ('not UTF-8', (), good.replace('"Karachi"', '"Karachi\udcff"')),
+            ('unknown table', (), good + '[FRIDAY]\nplaysurahbaqarah = true\n'),
+            ('unknown key, a typo', (), good.replace('lat = 12.8369', 'latt = 12.8369')),
+            ('latitude as text', (), good.replace('lat = 12.8369', 'lat = "12.8369"')),
+            ('volume not a whole number', (), good.replace('volume = 500', 'volume = 500.0')),
+            ('Surah Baqarah on as text (#9)', (),
+             good.replace('[surah_baqarah]\nenabled = false', '[surah_baqarah]\nenabled = "no"')),
             ('offset not a whole number (#12)', (),
-             good.replace('\nfajr = 0\n', '\nfajr = 5.5\n')),
+             fajr('offset_minutes = 0', 'offset_minutes = 5.5')),
             ('offset of an unknown prayer (#12)', (),
-             good.replace('\nfajr = 0\n', '\nfjar = 5\n')),
+             good.replace('[prayers.fajr]', '[prayers.fjar]')),
             ('offset not a whole number on the command line (#12)',
              ('--fajr-offset', '5.5'), good),
-            ('on or off is maybe (#13)', (),
-             good.replace('\nfajr = true\n', '\nfajr = maybe\n')),
-            ('on or off of an unknown prayer (#13)', (),
-             good.replace('\nfajr = true\n', '\nfjar = false\n')),
+            ('on or off as text (#13)', (), fajr('enabled = true', 'enabled = "true"')),
             ('unknown asr Maliki (#11)', (),
-             good.replace('asr = Standard', 'asr = Maliki')),
+             good.replace('asr = "Standard"', 'asr = "Maliki"')),
             ('unknown asr on the command line (#11)', ('--asr', 'Maliki'), good),
             ('lead-in not a whole number (#14)', (),
              good.replace('leadin_seconds = 0', 'leadin_seconds = 1.5')),
             ('lead-in more than 10 seconds on the command line (#14)',
              ('--leadin-seconds', '11'), good),
             ('audio file not in media/ (#10)', (),
-             good.replace('fajr = Adhan-fajr.mp3', 'fajr = Adhan-fjar.mp3')),
+             fajr('"Adhan-fajr.mp3"', '"Adhan-fjar.mp3"')),
             ('audio file not in media/, on the command line (#10)',
              ('--audio', 'Adhan-Makka1.mp3'), good),
             ('audio file at an absolute path that is not there (#10)',
@@ -182,11 +219,29 @@ class MainTest(FakesTestCase):
         ]
         for name, argv, text in cases:
             with self.subTest(name):
-                self.writeSettings(text.encode())
+                data = text.encode(errors='surrogateescape')
+                self.writeSettings(data)
                 crontab = cron.render()
                 self.assertNotEqual(self.runMain(*argv, cron=cron), 0)
                 self.assertEqual(cron.render(), crontab)
-                self.assertEqual(self.settings(), text.encode())
+                self.assertEqual(self.settings(), data)
+
+    def test_a_missing_surah_baqarah_file_stops_the_update(self):
+        """C4: with Surah Baqarah on, its file must be there, as an adhan
+        file must be (#9, #10). With Surah Baqarah off, it is not checked."""
+        settings = app.Settings(lat=12.8369, lon=77.4089, method='Karachi', asr='Standard',
+                                volume={'default': 0, 'fajr': 0},
+                                surah_baqarah=True, surah_volume=0, player='vlc', leadin=0,
+                                offsets=dict.fromkeys(app.PRAYERS, 0),
+                                enabled=dict.fromkeys(app.PRAYERS, False),
+                                audio={'default': 'Adhan-Makkah1.mp3'})
+        root = fakes.tempDir(self)
+        os.mkdir(pathjoin(root, 'media'))
+        with self.assertRaises(app.ConfigError):
+            app.checkAudio(settings, root)
+        app.checkAudio(settings._replace(surah_baqarah=False), root)
+        open(pathjoin(root, 'media', '002-surah-baqarah-mishary.mp3'), 'w').close()
+        app.checkAudio(settings, root)
 
     def test_all_prayers_off_is_allowed_and_logged(self):
         """C2, C3: with all five prayers off, no adhan job stays, the jobs that
@@ -236,7 +291,7 @@ class MainTest(FakesTestCase):
 
 
 class TimeThatCannotBeCalculatedTest(FakesTestCase):
-    """C4: a '-----' time is an error, and the crontab and settings.ini stay.
+    """C4: a '-----' time is an error, and the crontab and adhan.toml stay.
 
     setUp does a good first run, then a run at latitude 80 in polar night,
     where PrayTimes cannot calculate Maghrib.
@@ -256,7 +311,7 @@ class TimeThatCannotBeCalculatedTest(FakesTestCase):
         self.assertNotEqual(self.exit_code, 0)
         self.assertEqual(self.cron.render(), self.crontab_before)
 
-    def test_keeps_settings_ini(self):
+    def test_keeps_adhan_toml(self):
         """C4: the run does not save the location it could not use (#31)."""
         self.assertEqual(self.settings(), self.settings_before)
 
@@ -300,7 +355,7 @@ class TimeSyncTest(FakesTestCase):
     def test_clock_that_does_not_synchronize_changes_nothing(self):
         """C4: if the clock is not synchronized before the timeout, or
         timedatectl is not there, write it to the log and exit. The crontab
-        and settings.ini stay."""
+        and adhan.toml stay."""
         cases = [
             ('not synchronized', lambda: fakes.fakeTimedatectl(self.bin, 'no')),
             ('timedatectl not found', lambda: self.setPath(self.empty_bin)),

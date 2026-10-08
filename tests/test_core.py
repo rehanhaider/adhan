@@ -3,9 +3,11 @@
 Each test names the promise (C1-C6 in #16) that it protects.
 """
 
+import copy
 import datetime
+import math
+import tomllib
 import unittest
-from configparser import ConfigParser
 
 import fakes  # noqa: F401  (puts the app on sys.path)
 import updateAzaanTimers as app
@@ -43,25 +45,21 @@ ROOT = '/opt/adhan'
 NO_OFFSETS = dict.fromkeys(PRAYERS, 0)
 ALL_ON = dict.fromkeys(PRAYERS, True)
 DEFAULT_AUDIO = {'default': 'Adhan-Makkah1.mp3', 'fajr': 'Adhan-fajr.mp3'}
+DEFAULT_VOLUME = {'default': 0, 'fajr': 0}
 HANAFI_ASR = '16:37'
 SETTINGS = app.Settings(lat=12.8369, lon=77.4089, method='Karachi', asr='Standard',
-                        default_azaan_vol=500, fajr_azaan_vol=-500,
+                        volume={'default': 500, 'fajr': -500},
                         surah_baqarah=False, surah_volume=300,
                         player='paplay', leadin=0, offsets=NO_OFFSETS, enabled=ALL_ON,
-                        audio=DEFAULT_AUDIO, warnings=[])
+                        audio=DEFAULT_AUDIO)
 
-STORED = '''[DEFAULT]
-lat = 10
-lon = 20
-method = ISNA
-
-[VOLUME]
-defaultAzaanVolume = 700
-fajrAzaanVolume = -700
-
-[PLAYER]
-player = paplay
-'''
+# adhan.toml as tomllib reads it
+STORED = {
+    'location': {'lat': 10, 'lon': 20, 'method': 'ISNA'},
+    'audio': {'volume': 700, 'player': 'paplay'},
+    'prayers': {'fajr': {'volume': -700}},
+}
+ONLY_LOCATION = {'location': STORED['location']}
 
 
 def minutes(hhmm):
@@ -85,10 +83,18 @@ def args(*argv):
     return app.parseArgs().parse_args(argv)
 
 
-def stored(text=STORED):
-    config = ConfigParser()
-    config.read_string(text)
-    return config
+def merge(base, change):
+    """A copy of base with the tables and keys of change in it. A key with
+    the value None is removed."""
+    result = copy.deepcopy(base)
+    for key, value in change.items():
+        if value is None:
+            result.pop(key, None)
+        elif isinstance(value, dict) and isinstance(result.get(key), dict):
+            result[key] = merge(result[key], value)
+        else:
+            result[key] = copy.deepcopy(value)
+    return result
 
 
 class PrayerTimesTest(unittest.TestCase):
@@ -197,6 +203,20 @@ class BuildJobsTest(unittest.TestCase):
                     f"{ROOT}/playAzaan.sh '{ROOT}/media/My Adhan.mp3' 500 paplay {log}"),
             UPDATE_JOB, REBOOT_JOB])
 
+    def test_each_prayer_plays_at_its_volume(self):
+        """C2: a prayer plays at its own volume, else at the default volume.
+        Fajr has its own default volume, so it does not change with the
+        default volume."""
+        volume = {'default': 500, 'fajr': -500, 'asr': -1000}
+        jobs = app.buildJobs(TIMES, SETTINGS._replace(volume=volume), ROOT)
+        self.assertCountEqual(jobs, [
+            app.Job(5, 31, None, None, play('Adhan-fajr.mp3', -500)),
+            app.Job(12, 30, None, None, play('Adhan-Makkah1.mp3', 500)),
+            app.Job(15, 47, None, None, play('Adhan-Makkah1.mp3', -1000)),
+            app.Job(18, 13, None, None, play('Adhan-Makkah1.mp3', 500)),
+            app.Job(19, 28, None, None, play('Adhan-Makkah1.mp3', 500)),
+            UPDATE_JOB, REBOOT_JOB])
+
     def test_edge_times_give_the_right_hour_and_minute(self):
         """C2: 00:05 and 23:59 become the right cron hour and minute."""
         times = dict(TIMES, fajr='00:05', isha='23:59')
@@ -265,151 +285,238 @@ class ResolveSettingsTest(unittest.TestCase):
 
     def test_each_value_comes_from_the_command_line_then_the_file_then_the_default(self):
         """C5: settings work as expected, value by value."""
-        only_location = '[DEFAULT]\nlat = 10\nlon = 20\nmethod = ISNA\n'
         cases = [
             ('the command line wins',
              ('--lat', '12.8369', '--lon', '77.4089', '--method', 'Karachi',
               '--azaan-volume', '500', '--fajr-azaan-volume', '-500', '--player', 'vlc'),
              STORED,
-             dict(lat=12.8369, lon=77.4089, method='Karachi', default_azaan_vol=500,
-                  fajr_azaan_vol=-500, player='vlc')),
+             dict(lat=12.8369, lon=77.4089, method='Karachi',
+                  volume={'default': 500, 'fajr': -500}, player='vlc')),
             ('the stored value is used', (), STORED,
-             dict(lat=10, lon=20, method='ISNA', default_azaan_vol=700,
-                  fajr_azaan_vol=-700, player='paplay')),
-            ('the default is used', (), only_location,
-             dict(default_azaan_vol=0, fajr_azaan_vol=0, player='vlc')),
+             dict(lat=10, lon=20, method='ISNA', volume={'default': 700, 'fajr': -700},
+                  player='paplay')),
+            ('a stored float is used', (),
+             merge(STORED, {'location': {'lat': 12.8369, 'lon': -0.5}}),
+             dict(lat=12.8369, lon=-0.5)),
+            ('the default is used', (), ONLY_LOCATION,
+             dict(volume=DEFAULT_VOLUME, player='vlc')),
+            ('an empty table gives the defaults', (),
+             merge(ONLY_LOCATION, {'audio': {}, 'prayers': {'fajr': {}}, 'surah_baqarah': {}}),
+             dict(volume=DEFAULT_VOLUME, player='vlc', offsets=NO_OFFSETS, enabled=ALL_ON,
+                  audio=DEFAULT_AUDIO, surah_baqarah=False, surah_volume=0)),
             ('0 from the command line is a value (#6)',
              ('--lat', '0', '--lon', '0', '--azaan-volume', '0', '--fajr-azaan-volume', '0'),
              STORED,
-             dict(lat=0, lon=0, default_azaan_vol=0, fajr_azaan_vol=0)),
+             dict(lat=0, lon=0, volume=DEFAULT_VOLUME)),
             ('one volume missing, the other given (#23)', (),
-             STORED.replace('defaultAzaanVolume = 700\n', ''),
-             dict(default_azaan_vol=0, fajr_azaan_vol=-700)),
+             merge(STORED, {'audio': {'volume': None}}),
+             dict(volume={'default': 0, 'fajr': -700})),
+            ('a prayer can have its own volume', (),
+             merge(STORED, {'prayers': {'isha': {'volume': -300}}}),
+             dict(volume={'default': 700, 'fajr': -700, 'isha': -300})),
             ('karachi is accepted as Karachi (#26)', (),
-             STORED.replace('ISNA', 'karachi'),
+             merge(STORED, {'location': {'method': 'karachi'}}),
              dict(method='Karachi')),
             ('the stored offsets are used, a missing one is 0 (#12)', (),
-             STORED + '[OFFSETS]\nfajr = +5\nIsha = -2\n',
+             merge(STORED, {'prayers': {'fajr': {'offset_minutes': 5},
+                                        'isha': {'offset_minutes': -2}}}),
              dict(offsets=dict(NO_OFFSETS, fajr=5, isha=-2))),
             ('an offset on the command line wins, prayer by prayer (#12)',
              ('--fajr-offset', '7', '--maghrib-offset', '-1'),
-             STORED + '[OFFSETS]\nfajr = 5\nisha = -2\n',
+             merge(STORED, {'prayers': {'fajr': {'offset_minutes': 5},
+                                        'isha': {'offset_minutes': -2}}}),
              dict(offsets=dict(NO_OFFSETS, fajr=7, maghrib=-1, isha=-2))),
             ('0 on the command line is an offset (#12)', ('--fajr-offset', '0'),
-             STORED + '[OFFSETS]\nfajr = 5\n',
+             merge(STORED, {'prayers': {'fajr': {'offset_minutes': 5}}}),
              dict(offsets=NO_OFFSETS)),
-            ('the command line replaces a bad stored offset (#12)', ('--fajr-offset', '3'),
-             STORED + '[OFFSETS]\nfajr = five\n',
-             dict(offsets=dict(NO_OFFSETS, fajr=3))),
-            ('the default offsets are 0 (#12)', (), only_location,
+            ('the default offsets are 0 (#12)', (), ONLY_LOCATION,
              dict(offsets=NO_OFFSETS)),
             ('the stored prayers that are on or off are used (#13)', (),
-             STORED + '[ENABLED]\nfajr = false\nAsr = No\nisha = 1\n',
+             merge(STORED, {'prayers': {'fajr': {'enabled': False}, 'asr': {'enabled': False},
+                                        'isha': {'enabled': True}}}),
              dict(enabled=dict(ALL_ON, fajr=False, asr=False))),
             ('the command line turns a prayer on or off (#13)',
              ('--no-play-dhuhr', '--play-fajr'),
-             STORED + '[ENABLED]\nfajr = false\nisha = false\n',
+             merge(STORED, {'prayers': {'fajr': {'enabled': False},
+                                        'isha': {'enabled': False}}}),
              dict(enabled=dict(ALL_ON, dhuhr=False, isha=False))),
-            ('the command line replaces a bad stored value (#13)', ('--no-play-fajr',),
-             STORED + '[ENABLED]\nfajr = maybe\n',
-             dict(enabled=dict(ALL_ON, fajr=False))),
-            ('all prayers are on by default (#13)', (), only_location,
+            ('all prayers are on by default (#13)', (), ONLY_LOCATION,
              dict(enabled=ALL_ON)),
             ('the stored audio files are used (#10)', (),
-             STORED + '[AUDIO]\ndefault = Adhan-Madinah.mp3\nIsha = /home/me/isha.mp3\n',
+             merge(STORED, {'audio': {'file': 'Adhan-Madinah.mp3'},
+                            'prayers': {'isha': {'file': '/home/me/isha.mp3'}}}),
              dict(audio={'default': 'Adhan-Madinah.mp3', 'fajr': 'Adhan-fajr.mp3',
                          'isha': '/home/me/isha.mp3'})),
             ('an audio file on the command line wins (#10)',
              ('--audio', 'Adhan-Makkah2.mp3', '--fajr-audio', 'Adhan-Turkish.mp3',
               '--asr-audio', 'Adhan-Makkah1-Dua.mp3'),
-             STORED + '[AUDIO]\ndefault = Adhan-Madinah.mp3\nfajr = x.mp3\nisha = y.mp3\n',
+             merge(STORED, {'audio': {'file': 'Adhan-Madinah.mp3'},
+                            'prayers': {'fajr': {'file': 'x.mp3'},
+                                        'isha': {'file': 'y.mp3'}}}),
              dict(audio={'default': 'Adhan-Makkah2.mp3', 'fajr': 'Adhan-Turkish.mp3',
                          'asr': 'Adhan-Makkah1-Dua.mp3', 'isha': 'y.mp3'})),
-            ('the default audio files are the files of today (#10)', (), only_location,
+            ('the default audio files are the files of today (#10)', (), ONLY_LOCATION,
              dict(audio=DEFAULT_AUDIO)),
+            ('a file name keeps a space, a quote and a backslash', (),
+             merge(STORED, {'audio': {'file': 'My "Adhan" \\ 2.mp3'}}),
+             dict(audio=dict(DEFAULT_AUDIO, default='My "Adhan" \\ 2.mp3'))),
             ('the stored asr is used, hanafi is accepted as Hanafi (#11)', (),
-             STORED.replace('method = ISNA\n', 'method = ISNA\nasr = hanafi\n'),
+             merge(STORED, {'location': {'asr': 'hanafi'}}),
              dict(asr='Hanafi')),
             ('asr on the command line wins, in any case (#11)', ('--asr', 'STANDARD'),
-             STORED.replace('method = ISNA\n', 'method = ISNA\nasr = Hanafi\n'),
+             merge(STORED, {'location': {'asr': 'Hanafi'}}),
              dict(asr='Standard')),
-            ('the default asr is Standard (#11)', (), only_location,
+            ('the default asr is Standard (#11)', (), ONLY_LOCATION,
              dict(asr='Standard')),
             ('the stored lead-in is used (#14)', (),
-             STORED + 'leadin_seconds = 2\n',
+             merge(STORED, {'audio': {'leadin_seconds': 2}}),
              dict(leadin=2)),
             ('the lead-in on the command line wins (#14)', ('--leadin-seconds', '10'),
-             STORED + 'leadin_seconds = 2\n',
+             merge(STORED, {'audio': {'leadin_seconds': 2}}),
              dict(leadin=10)),
             ('0 on the command line is a lead-in (#14)', ('--leadin-seconds', '0'),
-             STORED + 'leadin_seconds = 2\n',
+             merge(STORED, {'audio': {'leadin_seconds': 2}}),
              dict(leadin=0)),
-            ('the default lead-in is 0 (#14)', (), only_location,
+            ('the default lead-in is 0 (#14)', (), ONLY_LOCATION,
              dict(leadin=0)),
-            ('a prayer in [DEFAULT] is not an audio file (#10)', (),
-             STORED.replace('[DEFAULT]\n', '[DEFAULT]\nfajr = x.mp3\n') + '[AUDIO]\n',
-             dict(audio=DEFAULT_AUDIO)),
-            ('a prayer in [DEFAULT] is not on or off (#13)', (),
-             STORED.replace('[DEFAULT]\n', '[DEFAULT]\nfajr = false\n') + '[ENABLED]\n',
-             dict(enabled=ALL_ON)),
-            ('a prayer in [DEFAULT] is not an offset (#12)', (),
-             STORED.replace('[DEFAULT]\n', '[DEFAULT]\nfajr = 9\n') + '[OFFSETS]\nisha = 1\n',
-             dict(offsets=dict(NO_OFFSETS, isha=1))),
+            ('the stored Surah Baqarah is used (#9)', (),
+             merge(STORED, {'surah_baqarah': {'enabled': True, 'volume': -100}}),
+             dict(surah_baqarah=True, surah_volume=-100)),
+            ('Surah Baqarah is off by default (#9)', (), ONLY_LOCATION,
+             dict(surah_baqarah=False, surah_volume=0)),
+            ('the player in any case', (), merge(STORED, {'audio': {'player': 'VLC'}}),
+             dict(player='vlc')),
         ]
-        for name, argv, text, expected in cases:
+        for name, argv, stored, expected in cases:
             with self.subTest(name):
-                settings = app.resolveSettings(args(*argv), stored(text))
+                settings = app.resolveSettings(args(*argv), stored)
                 self.assertEqual({key: getattr(settings, key) for key in expected},
                                  expected)
 
     def test_bad_input_raises_config_error(self):
         """C4: bad or missing input is an error, not a schedule."""
+        def prayer(name, **values):
+            return merge(STORED, {'prayers': {name: values}})
+
         cases = [
             ('latitude nan', ('--lat', 'nan'), STORED),
             ('latitude inf', ('--lat', 'inf'), STORED),
             ('latitude 91', ('--lat', '91'), STORED),
             ('longitude 181', ('--lon', '181'), STORED),
-            ('unknown method Foo (#26)', (), STORED.replace('ISNA', 'Foo')),
-            ('unsupported player', (), STORED.replace('paplay', 'winamp')),
-            ('latitude missing', (), STORED.replace('lat = 10\n', '')),
-            ('longitude missing', (), STORED.replace('lon = 20\n', '')),
-            ('method missing', (), STORED.replace('method = ISNA\n', '')),
-            ('offset 5.5 is not a whole number (#12)', (), STORED + '[OFFSETS]\nfajr = 5.5\n'),
-            ('offset five is not a number (#12)', (), STORED + '[OFFSETS]\nisha = five\n'),
-            ('offset with no value (#12)', (), STORED + '[OFFSETS]\nasr =\n'),
-            ('offset of an unknown prayer, a typo (#12)', (), STORED + '[OFFSETS]\nfjar = 5\n'),
-            ('lat in [OFFSETS], also a key of [DEFAULT] (#12)', (), STORED + '[OFFSETS]\nlat = 5\n'),
-            ('on or off is maybe (#13)', (), STORED + '[ENABLED]\nfajr = maybe\n'),
-            ('on or off with no value (#13)', (), STORED + '[ENABLED]\nisha =\n'),
-            ('on or off of an unknown prayer, a typo (#13)', (), STORED + '[ENABLED]\nfjar = false\n'),
-            ('unknown asr Shafii (#11)', (),
-             STORED.replace('method = ISNA\n', 'method = ISNA\nasr = Shafii\n')),
-            ('asr with no value (#11)', (),
-             STORED.replace('method = ISNA\n', 'method = ISNA\nasr =\n')),
-            ('lead-in -1 (#14)', (), STORED + 'leadin_seconds = -1\n'),
-            ('lead-in 1.5 is not a whole number (#14)', (), STORED + 'leadin_seconds = 1.5\n'),
-            ('lead-in two is not a number (#14)', (), STORED + 'leadin_seconds = two\n'),
-            ('lead-in with no value (#14)', (), STORED + 'leadin_seconds =\n'),
+            ('stored latitude nan', (), merge(STORED, {'location': {'lat': math.nan}})),
+            ('stored longitude -181', (), merge(STORED, {'location': {'lon': -181}})),
+            ('unknown method Foo (#26)', (), merge(STORED, {'location': {'method': 'Foo'}})),
+            ('unsupported player', (), merge(STORED, {'audio': {'player': 'winamp'}})),
+            ('no file', (), {}),
+            ('no [location]', (), merge(STORED, {'location': None})),
+            ('latitude missing', (), merge(STORED, {'location': {'lat': None}})),
+            ('longitude missing', (), merge(STORED, {'location': {'lon': None}})),
+            ('method missing', (), merge(STORED, {'location': {'method': None}})),
+            # Wrong types: each value has one type
+            ('latitude as text', (), merge(STORED, {'location': {'lat': '10'}})),
+            ('latitude as a boolean', (), merge(STORED, {'location': {'lat': True}})),
+            ('method as a number', (), merge(STORED, {'location': {'method': 1}})),
+            ('asr as a list', (), merge(STORED, {'location': {'asr': ['Hanafi']}})),
+            ('volume as text', (), merge(STORED, {'audio': {'volume': '700'}})),
+            ('volume 1.5 is not a whole number', (), merge(STORED, {'audio': {'volume': 1.5}})),
+            ('volume as a boolean', (), merge(STORED, {'audio': {'volume': True}})),
+            ('volume of a prayer as text', (), prayer('fajr', volume='-700')),
+            ('player as a boolean', (), merge(STORED, {'audio': {'player': False}})),
+            ('file as a number', (), merge(STORED, {'audio': {'file': 1}})),
+            ('Surah Baqarah on as text (#9)', (),
+             merge(STORED, {'surah_baqarah': {'enabled': 'True'}})),
+            ('Surah Baqarah volume as text (#9)', (),
+             merge(STORED, {'surah_baqarah': {'volume': '0'}})),
+            ('Surah Baqarah volume 1.5 (#9)', (),
+             merge(STORED, {'surah_baqarah': {'volume': 1.5}})),
+            ('a date, which TOML can give', (),
+             merge(STORED, {'location': {'lat': datetime.date(2026, 1, 15)}})),
+            # A value where a table must be, and a table where a value must be
+            ('[location] as a value', (), merge(STORED, {'location': 'London'})),
+            ('[prayers] as a value', (), merge(STORED, {'prayers': 5})),
+            ('[prayers.fajr] as a value', (), merge(STORED, {'prayers': {'fajr': False}})),
+            ('[surah_baqarah] as a value (#9)', (), merge(STORED, {'surah_baqarah': True})),
+            ('latitude as a table', (), merge(STORED, {'location': {'lat': {'deg': 10}}})),
+            # Unknown keys: a typo must not lose a value
+            ('unknown table, the old [FRIDAY]', (), merge(STORED, {'FRIDAY': {}})),
+            ('unknown value at the top', (), merge(STORED, {'lat': 10})),
+            ('unknown key in [location]', (), merge(STORED, {'location': {'latitude': 10}})),
+            ('unknown key in [audio]', (), merge(STORED, {'audio': {'default': 'x.mp3'}})),
+            ('unknown key in [surah_baqarah] (#9)', (),
+             merge(STORED, {'surah_baqarah': {'time': '07:00'}})),
+            ('key in the wrong case', (), merge(STORED, {'location': {'Lat': 10}})),
+            ('offset 5.5 is not a whole number (#12)', (), prayer('fajr', offset_minutes=5.5)),
+            ('offset as text (#12)', (), prayer('isha', offset_minutes='5')),
+            ('offset of an unknown prayer, a typo (#12)', (), prayer('fjar', offset_minutes=5)),
+            ('unknown key in a prayer, a typo (#12)', (), prayer('fajr', offset=5)),
+            ('on or off as text (#13)', (), prayer('fajr', enabled='false')),
+            ('on or off as a number (#13)', (), prayer('isha', enabled=0)),
+            ('unknown asr Shafii (#11)', (), merge(STORED, {'location': {'asr': 'Shafii'}})),
+            ('empty asr (#11)', (), merge(STORED, {'location': {'asr': ''}})),
+            ('lead-in -1 (#14)', (), merge(STORED, {'audio': {'leadin_seconds': -1}})),
+            ('lead-in 1.5 is not a whole number (#14)', (),
+             merge(STORED, {'audio': {'leadin_seconds': 1.5}})),
+            ('lead-in as text (#14)', (), merge(STORED, {'audio': {'leadin_seconds': '2'}})),
             ('lead-in 11, more than 10 seconds (#14)', ('--leadin-seconds', '11'), STORED),
             ('lead-in -1 on the command line (#14)', ('--leadin-seconds', '-1'), STORED),
-            ('audio file of an unknown prayer, a typo (#10)', (), STORED + '[AUDIO]\nfjar = x.mp3\n'),
-            ('audio file with no value (#10)', (), STORED + '[AUDIO]\nfajr =\n'),
-            ('audio file with %, which cron changes (#10)', (), STORED + '[AUDIO]\nisha = 100%.mp3\n'),
+            ('stored lead-in 11 (#14)', (), merge(STORED, {'audio': {'leadin_seconds': 11}})),
+            ('empty audio file (#10)', (), prayer('fajr', file='')),
+            ('audio file with %, which cron changes (#10)', (), prayer('isha', file='100%.mp3')),
             ('audio file with % on the command line (#10)', ('--audio', '100%.mp3'), STORED),
             ('audio file with #, which the crontab reads as a comment (#10)', (),
-             STORED + '[AUDIO]\nisha = Adhan #2.mp3\n'),
+             prayer('isha', file='Adhan #2.mp3')),
             ('audio file with # and no space (#10)', ('--fajr-audio', 'Adhan#2.mp3'), STORED),
-            ('audio file that starts with a space, settings.ini loses it (#10)',
-             ('--isha-audio', ' Adhan-Madinah.mp3'), STORED),
-            ('audio file that ends with a space (#10)', ('--audio', 'Adhan-Madinah.mp3 '), STORED),
-            ('audio file with a carriage return, settings.ini reads a new line (#10)',
-             ('--audio', 'Adhan\r.mp3'), STORED),
+            ('audio file with a new line, which ends the cron job (#10)', (),
+             merge(STORED, {'audio': {'file': 'Adhan\n.mp3'}})),
+            ('audio file with a carriage return (#10)', ('--audio', 'Adhan\r.mp3'), STORED),
             ('audio file with a tab (#10)', ('--audio', 'Adhan\t.mp3'), STORED),
         ]
-        for name, argv, text in cases:
+        for name, argv, stored in cases:
             with self.subTest(name):
                 with self.assertRaises(app.ConfigError):
-                    app.resolveSettings(args(*argv), stored(text))
+                    app.resolveSettings(args(*argv), stored)
+
+
+class WriteSettingsTest(unittest.TestCase):
+    """C5: the file that the app writes gives the same settings when it is read."""
+
+    def test_the_written_file_gives_the_same_settings(self):
+        """C5: write the settings, read them with tomllib, and get the same
+        settings back. Also for the values that a TOML string must escape."""
+        cases = [
+            ('the defaults', app.resolveSettings(args(), ONLY_LOCATION)),
+            ('every value changed', SETTINGS._replace(
+                lat=-33.8688, lon=151.0, asr='Hanafi', surah_baqarah=True, surah_volume=-200,
+                leadin=3, volume={'default': 500, 'fajr': -500, 'maghrib': 100},
+                offsets=dict(NO_OFFSETS, fajr=5, isha=-10),
+                enabled=dict(ALL_ON, dhuhr=False),
+                audio=dict(DEFAULT_AUDIO, isha='/home/me/My "Isha" \\ adhan é.mp3'))),
+            ('a whole number latitude', SETTINGS._replace(lat=10.0, lon=0.0)),
+            ('a small latitude', SETTINGS._replace(lat=1e-05, lon=-1e-07)),
+        ]
+        for name, settings in cases:
+            with self.subTest(name):
+                text = app.settingsText(settings)
+                self.assertEqual(app.resolveSettings(args(), tomllib.loads(text)), settings)
+
+    def test_the_writer_gives_typed_values(self):
+        """C5: numbers, booleans and text have their TOML types, in tables."""
+        data = tomllib.loads(app.settingsText(SETTINGS))
+        self.assertEqual(data['location'], {'lat': 12.8369, 'lon': 77.4089,
+                                            'method': 'Karachi', 'asr': 'Standard'})
+        self.assertEqual(data['audio'], {'player': 'paplay', 'leadin_seconds': 0,
+                                         'volume': 500, 'file': 'Adhan-Makkah1.mp3'})
+        self.assertEqual(data['prayers']['fajr'], {'file': 'Adhan-fajr.mp3', 'volume': -500,
+                                                   'offset_minutes': 0, 'enabled': True})
+        self.assertEqual(data['prayers']['isha'], {'offset_minutes': 0, 'enabled': True})
+        self.assertEqual(data['surah_baqarah'], {'enabled': False, 'volume': 300})
+
+    def test_the_writer_writes_toml(self):
+        """C5: tomlText() writes the tables and values that tomllib reads back."""
+        data = {'a': {'text': 'x "y" \\ z\u00e9', 'control': '\x7f\x01',
+                      'whole': -3, 'float': 2.5, 'yes': True, 'no': False},
+                'b': {'c': {'d': 1}, 'e': {}}}
+        self.assertEqual(tomllib.loads(app.tomlText(data)), data)
 
 
 if __name__ == '__main__':
