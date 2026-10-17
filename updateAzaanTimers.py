@@ -45,8 +45,11 @@ else:
         'MAILTO='. This reads it as 'MAILTO=""', which cron reads the same.
 
         python-crontab 3.x deletes a comment with a space before an =, such
-        as '# timeout=30 for backup', because it reads it as a variable. This
-        keeps it in its place.
+        as '# timeout=30 for backup', because it reads it as a variable. It
+        does the same with a job that it cannot read, such as
+        '0 30 * * * backup.sh --full=1', and writes such a job without an = as
+        '# DISABLED LINE'. Cron accepts an hour of 30. This keeps these lines
+        in their place, as they were.
 
         python-crontab 3.x gives a variable to the job on the next line, or,
         after the last job, to the next job that is added. When that is one
@@ -69,10 +72,17 @@ else:
                 if len(name.split()) == 1 and not name.lstrip().startswith('#'):
                     value = value.strip() or '""'
                     line = f'{name.strip()}={value}'
-                elif line.lstrip().startswith('#'):
+                else:
                     self.lines.append(line.rstrip('\n'))
                     return None
             return super().append(item, line, read=read, before=before)
+
+        def render(self, errors=False):
+            text = super().render(errors)
+            for line in self.lines:
+                if isinstance(line, str) and line.strip() and not line.strip().startswith('#'):
+                    text = text.replace(f'# DISABLED LINE\n# {line}', line, 1)
+            return text
 
 # Players that playAzaan.sh knows how to drive, mapped to the command each one
 # needs on PATH. Add a player here and a matching case in playAzaan.sh.
