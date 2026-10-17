@@ -173,6 +173,37 @@ class FullRunTest(unittest.TestCase):
         self.assertRunOk(*FIRST_RUN)
         self.assertTrue(self.app.crontab().startswith('MAILTO=""\n'), self.app.crontab())
 
+    def test_a_variable_with_an_empty_value_stays(self):
+        """C3: 'MAILTO=' stops the mails of cron. python-crontab 3.x fails on a
+        variable with an empty value, so the run reads it as 'MAILTO=""', which
+        cron reads the same (#29)."""
+        self.app = fakes.App(self, crontab='MAILTO=\n' + USER_JOB)
+        self.assertRunOk(*FIRST_RUN)
+        self.assertTrue(self.app.crontab().startswith('MAILTO=""\n' + USER_JOB),
+                        self.app.crontab())
+
+    def test_a_comment_with_an_equals_sign_stays(self):
+        """C3: python-crontab 3.x deletes a comment that has a space before an =,
+        because it reads it as a variable. The run keeps it (#29)."""
+        self.app = fakes.App(self, crontab='# timeout=30 for backup\n' + USER_JOB)
+        self.assertRunOk(*FIRST_RUN)
+        self.assertTrue(self.app.crontab().startswith('# timeout=30 for backup\n' + USER_JOB),
+                        self.app.crontab())
+
+    def test_old_update_job_with_an_old_library_keeps_the_crontab(self):
+        """C4: the system python3 of an old update job can have python-crontab 2.x,
+        for example the python3-crontab package of Debian. It stops before it
+        changes the crontab, as without the library (#29)."""
+        self.assertRunOk(*FIRST_RUN)
+        crontab = self.app.crontab()
+        # The folder of the script is first on sys.path, so this module is imported
+        with open(f'{self.app.root}/crontab.py', 'w') as fh:
+            fh.write("__version__ = '2.7.1'\n\nclass CronTab:\n    pass\n")
+        result = self.app.run(today=TODAY)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn('uv sync', result.stdout)
+        self.assertEqual(self.app.crontab(), crontab)
+
     def test_old_update_job_without_the_library_keeps_the_crontab(self):
         """C4: before #29, the update jobs ran the system python3 with a copy of
         python-crontab in the repo. After a git pull, the old job finds no
