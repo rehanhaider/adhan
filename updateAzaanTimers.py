@@ -24,9 +24,24 @@ from modules.praytimes import PrayTimes
 # After a git pull, such an old job finds no python-crontab: main() stops
 # before it changes the crontab, and says how to install the new jobs.
 try:
-    from crontab import CronTab
+    from crontab import CronTab as LibraryCronTab
 except ImportError:
     CronTab = None
+else:
+    class CronTab(LibraryCronTab):
+        """python-crontab, but it keeps a variable with spaces around its =.
+
+        crontab(5) allows 'PATH = /usr/bin', but python-crontab 3.x deletes
+        that line when it reads the crontab, and write() would delete it from
+        the user's crontab. This reads it as 'PATH=/usr/bin', which cron reads
+        the same (#29).
+        """
+
+        def append(self, item, line='', read=False, before=None):
+            name, equals, value = line.partition('=')
+            if read and equals and name.strip().isidentifier() and not item.is_valid():
+                line = f'{name.strip()}={value.strip()}'
+            return super().append(item, line, read=read, before=before)
 
 # Players that playAzaan.sh knows how to drive, mapped to the command each one
 # needs on PATH. Add a player here and a matching case in playAzaan.sh.
