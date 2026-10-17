@@ -173,6 +173,17 @@ class FullRunTest(unittest.TestCase):
         self.assertRunOk(*FIRST_RUN)
         self.assertTrue(self.app.crontab().startswith(lines + USER_JOB), self.app.crontab())
 
+    def test_a_variable_above_a_job_that_python_crontab_cannot_read_stays_above_it(self):
+        """C3: python-crontab 3.x gives a variable to the next job that it can
+        read, below the job that it cannot read. The run keeps the variable
+        above that job, so that cron gives it to that job too (#29)."""
+        lines = ('PATH=/usr/bin\n0 30 * * * /home/user/backup.sh --full=1\n'
+                 'MAILTO=""\n0 30 * * * /home/user/backup.sh\n')
+        self.app = fakes.App(self, crontab=USER_JOB + lines + USER_JOB)
+        self.assertRunOk(*FIRST_RUN)
+        self.assertTrue(self.app.crontab().startswith(USER_JOB + lines + USER_JOB),
+                        self.app.crontab())
+
     def test_a_variable_after_the_last_job_stays(self):
         """C3: python-crontab 3.x gives a variable after the user's last job to
         the next job, which is our first job. The next run removes our jobs,
