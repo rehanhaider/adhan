@@ -18,6 +18,8 @@ import fakes
 
 TODAY = datetime.date(2026, 1, 15)
 USER_JOB = '@daily /home/user/backup.sh\n'
+# A job of an earlier run, which the next run replaces
+OUR_OLD_JOB = '0 5 * * * /home/user/adhan/playAzaan.sh x.mp3 0 vlc # rpiAdhanClockJob\n'
 FIRST_RUN = ('--lat', '12.8369', '--lon', '77.4089', '--method', 'Karachi',
              '--azaan-volume', '500', '--fajr-azaan-volume', '-500')
 
@@ -162,6 +164,14 @@ class FullRunTest(unittest.TestCase):
         self.assertRunOk()
         self.assertTrue(self.app.crontab().startswith('MAILTO=""\n' + USER_JOB),
                         self.app.crontab())
+
+    def test_a_variable_above_our_jobs_stays(self):
+        """C3: python-crontab 3.x gives a variable to the job on the next line.
+        When that is one of our jobs, the run removes the variable with it. The
+        run moves it to the top of the crontab, as python-crontab 2.0.2 did (#29)."""
+        self.app = fakes.App(self, crontab='MAILTO=""\n' + OUR_OLD_JOB)
+        self.assertRunOk(*FIRST_RUN)
+        self.assertTrue(self.app.crontab().startswith('MAILTO=""\n'), self.app.crontab())
 
     def test_old_update_job_without_the_library_keeps_the_crontab(self):
         """C4: before #29, the update jobs ran the system python3 with a copy of
