@@ -163,6 +163,16 @@ class FullRunTest(unittest.TestCase):
         self.assertTrue(self.app.crontab().startswith('MY-VAR=x\n' + USER_JOB),
                         self.app.crontab())
 
+    def test_a_job_that_python_crontab_cannot_read_stays(self):
+        """C3: crontab accepts an hour of 30, but python-crontab 3.x cannot read
+        it. It deletes such a line when it has an =, and writes the other as
+        '# DISABLED LINE'. The run writes both back as they were (#29)."""
+        lines = ('0 30 * * * /home/user/backup.sh --full=1\n'
+                 '0 30 * * * /home/user/backup.sh\n')
+        self.app = fakes.App(self, crontab=lines + USER_JOB)
+        self.assertRunOk(*FIRST_RUN)
+        self.assertTrue(self.app.crontab().startswith(lines + USER_JOB), self.app.crontab())
+
     def test_a_variable_after_the_last_job_stays(self):
         """C3: python-crontab 3.x gives a variable after the user's last job to
         the next job, which is our first job. The next run removes our jobs,
