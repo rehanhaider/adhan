@@ -49,7 +49,7 @@ else:
         does the same with a job that it cannot read, such as
         '0 30 * * * backup.sh --full=1', and writes such a job without an = as
         '# DISABLED LINE'. Cron accepts an hour of 30. This keeps these lines
-        in their place, as they were.
+        in their place, as they were, below the variables above them.
 
         python-crontab 3.x gives a variable to the job on the next line, or,
         after the last job, to the next job that is added. When that is one
@@ -68,11 +68,15 @@ else:
 
         def append(self, item, line='', read=False, before=None):
             name, equals, value = line.partition('=')
-            if read and equals and not item.is_valid():
-                if len(name.split()) == 1 and not name.lstrip().startswith('#'):
+            if read and line.strip() and not item.is_valid():
+                if equals and len(name.split()) == 1 and not name.lstrip().startswith('#'):
                     value = value.strip() or '""'
                     line = f'{name.strip()}={value}'
-                else:
+                elif equals or not line.lstrip().startswith('#'):
+                    # Keep the line in its place, below the variables above it
+                    for key, value in self._parked_env.items():
+                        self.lines.append(f'{key}={value}' if value else f'{key}=""')
+                    self._parked_env.clear()
                     self.lines.append(line.rstrip('\n'))
                     return None
             return super().append(item, line, read=read, before=before)
