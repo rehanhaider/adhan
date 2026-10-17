@@ -178,17 +178,19 @@ class App:
         os.mkdir(self.bin)
         fakeCvlc(self.bin, pathjoin(self.root, 'events'))
 
-    def run(self, *argv, today, log=None):
+    def run(self, *argv, today, log=None, site_packages=True):
         """Run updateAzaanTimers.py on the given date in UTC +5:30.
 
         With log, stdout and stderr go to that open file, as with
-        >> adhan.log 2>&1 in the cron job.
+        >> adhan.log 2>&1 in the cron job. With site_packages=False, Python
+        starts with -S and has no installed packages, as the system python3
+        of an old cron job (#29).
         """
         env = dict(os.environ, PATH=self.bin, TZ='IST-5:30')
         output = (dict(stdout=log, stderr=subprocess.STDOUT) if log
                   else dict(capture_output=True))
         return subprocess.run(
-            [sys.executable, '-c', DRIVER,
+            [sys.executable, *([] if site_packages else ['-S']), '-c', DRIVER,
              pathjoin(self.root, 'updateAzaanTimers.py'),
              pathjoin(ROOT, 'crontab'), self.croncmd, today.isoformat(), *argv],
             cwd=self.root, env=env, text=True, timeout=60, **output)

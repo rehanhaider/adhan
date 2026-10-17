@@ -85,10 +85,12 @@ def play(audio, volume, player='paplay'):
             f'>> {ROOT}/adhan.log 2>&1')
 
 
+# The update jobs run the Python of the virtual environment that uv makes (#29)
 UPDATE_JOB = app.Job(3, 15, None, None,
-                     f'python3 {ROOT}/updateAzaanTimers.py >> {ROOT}/adhan.log 2>&1')
+                     f'{ROOT}/.venv/bin/python {ROOT}/updateAzaanTimers.py '
+                     f'>> {ROOT}/adhan.log 2>&1')
 REBOOT_JOB = app.Job(None, None, None, None,
-                     f'python3 {ROOT}/updateAzaanTimers.py --wait-for-time-sync '
+                     f'{ROOT}/.venv/bin/python {ROOT}/updateAzaanTimers.py --wait-for-time-sync '
                      f'>> {ROOT}/adhan.log 2>&1', reboot=True)
 
 

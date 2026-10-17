@@ -6,7 +6,8 @@ script, the user crontab and the system timezone. The expected crontab was
 recorded from the script before the refactor into a core and a shell (#16).
 #7 removed the job that cleared the log every month. #15 added the update
 after a reboot. #42 moved the settings from settings.ini to adhan.toml. #43
-removed the [surah_baqarah] table, which is a rule now. The
+removed the [surah_baqarah] table, which is a rule now. #29 changed python3
+in the update jobs to the Python of the virtual environment. The
 tests in test_main.py cover the other cases through main() with fakes.
 """
 
@@ -79,8 +80,10 @@ def expectedCrontab(root, fajr_volume, volume):
             PRAYER_TIMES, ['Adhan-fajr.mp3'] + ['Adhan-Makkah1.mp3'] * 4,
             [fajr_volume] + [volume] * 4):
         lines.append(f'{minute} {hour} * * * {play}/{audio} {vol} vlc {log}')
-    lines.append(f'15 3 * * * python3 {root}/updateAzaanTimers.py {log}')
-    lines.append(f'@reboot python3 {root}/updateAzaanTimers.py --wait-for-time-sync {log}')
+    # The Python of the virtual environment that uv makes, not python3 (#29)
+    python = f'{root}/.venv/bin/python'
+    lines.append(f'15 3 * * * {python} {root}/updateAzaanTimers.py {log}')
+    lines.append(f'@reboot {python} {root}/updateAzaanTimers.py --wait-for-time-sync {log}')
     return '\n'.join(lines) + '\n'
 
 
@@ -139,6 +142,29 @@ class FullRunTest(unittest.TestCase):
         self.assertEqual(self.app.crontab(), USER_JOB)
         self.assertIsNone(self.app.settings())
         self.assertEqual(fakes.readBytes(ini), OLD_SETTINGS_INI.encode())
+
+    def test_old_update_job_without_the_library_keeps_the_crontab(self):
+        """C4: before #29, the update jobs ran the system python3 with a copy of
+        python-crontab in the repo. After a git pull, the old job finds no
+        python-crontab. It stops before it changes the crontab and adhan.toml,
+        and the log says how to install the new jobs."""
+        self.assertRunOk(*FIRST_RUN)
+        crontab = self.app.crontab()
+        settings = self.app.settings()
+        log_path = f'{self.app.root}/adhan.log'
+        with open(log_path, 'a') as log:
+            result = self.app.run(today=TODAY, log=log, site_packages=False)
+        self.assertNotEqual(result.returncode, 0)
+        with open(log_path) as fh:
+            text = fh.read()
+        for line in text.splitlines():
+            self.assertTrue(line.startswith('2026-01-15 12:00:00 '), text)
+        self.assertIn('python-crontab', text)
+        self.assertIn('uv sync', text)
+        self.assertIn(f'{self.app.root}/.venv/bin/python {self.app.root}/updateAzaanTimers.py',
+                      text)
+        self.assertEqual(self.app.crontab(), crontab)
+        self.assertEqual(self.app.settings(), settings)
 
 
 if __name__ == '__main__':
