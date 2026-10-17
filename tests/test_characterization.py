@@ -143,6 +143,15 @@ class FullRunTest(unittest.TestCase):
         self.assertIsNone(self.app.settings())
         self.assertEqual(fakes.readBytes(ini), OLD_SETTINGS_INI.encode())
 
+    def test_a_variable_with_spaces_around_the_equals_sign_stays(self):
+        """C3: crontab(5) allows spaces around the = of a variable. python-crontab
+        3.x deletes such a line when it reads the crontab, so the run writes it
+        without the spaces (#29). Cron reads both lines the same."""
+        self.app = fakes.App(self, crontab='PATH = /usr/bin:/bin\n' + USER_JOB)
+        self.assertRunOk(*FIRST_RUN)
+        self.assertTrue(self.app.crontab().startswith('PATH=/usr/bin:/bin\n' + USER_JOB),
+                        self.app.crontab())
+
     def test_old_update_job_without_the_library_keeps_the_crontab(self):
         """C4: before #29, the update jobs ran the system python3 with a copy of
         python-crontab in the repo. After a git pull, the old job finds no
