@@ -17,10 +17,16 @@ import tomllib
 
 
 root_dir = dirname(abspath(__file__))
-sys.path.insert(0, pathjoin(root_dir, 'crontab'))
 from modules.praytimes import PrayTimes
 
-from crontab import CronTab
+# python-crontab is in the virtual environment that uv makes (#29). Before #29
+# a copy of it was in this repo, and the update jobs ran the system python3.
+# After a git pull, such an old job finds no python-crontab: main() stops
+# before it changes the crontab, and says how to install the new jobs.
+try:
+    from crontab import CronTab
+except ImportError:
+    CronTab = None
 
 # Players that playAzaan.sh knows how to drive, mapped to the command each one
 # needs on PATH. Add a player here and a matching case in playAzaan.sh.
@@ -695,11 +701,14 @@ def buildJobs(times, settings, root_dir, date):
                         tuple(sorted(weekdays)) if len(weekdays) < 7 else None,
                         play(mediaPath(rule.file, root_dir), volume)))
     # Run this script again overnight. It also deletes the old lines of the log.
-    jobs.append(Job(3, 15, None, None, f"python3 {root_dir}/updateAzaanTimers.py {strLog}"))
+    # It runs the Python of the virtual environment that uv makes (#29), not
+    # uv run: uv is not on the PATH of cron, and uv run can download at run time.
+    strUpdate = f"{root_dir}/.venv/bin/python {root_dir}/updateAzaanTimers.py"
+    jobs.append(Job(3, 15, None, None, f"{strUpdate} {strLog}"))
     # And after each reboot, as the Pi can be off at 03:15. That update waits
     # for the clock first, because a Pi has no clock battery (#15).
     jobs.append(Job(None, None, None, None,
-                    f"python3 {root_dir}/updateAzaanTimers.py --wait-for-time-sync {strLog}",
+                    f"{strUpdate} --wait-for-time-sync {strLog}",
                     reboot=True))
     return jobs
 
@@ -895,6 +904,13 @@ def main(argv=None, settings_path=None, cron=None, today=None, utcOffset=None,
     # An error that Python or argparse writes has no timestamp. After this
     # line, it stays with this run when the log is pruned.
     log("Updating the prayer times")
+    if CronTab is None:
+        python = f"{root_dir}/.venv/bin/python"
+        log(f"python-crontab is not installed for {sys.executable}. The update jobs "
+            f"run {python} now (#29). Run 'uv sync' in {root_dir}, then run "
+            f"'{python} {root_dir}/updateAzaanTimers.py' once to install the "
+            f"new jobs. See README.md. The prayer times were not updated.")
+        sys.exit(1)
     args = parseArgs().parse_args(argv)
 
     # The date and the timezone offset come from the clock, so get them after

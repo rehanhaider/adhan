@@ -4,7 +4,7 @@ No test may read or write the real user crontab, the real adhan.toml, the
 real adhan.log or the speakers. The helpers here give the tests temporary
 folders, a fake crontab command, a fake cvlc and a fixed date.
 
-Run the tests with: python3 -m unittest discover tests
+Run the tests with: uv run python -m unittest discover tests
 """
 
 import os
@@ -22,17 +22,18 @@ REAL_LOG = pathjoin(ROOT, 'adhan.log')
 sys.path.insert(0, ROOT)
 
 # Runs updateAzaanTimers.py as cron does, with two system boundaries replaced:
-# the vendored crontab library calls /usr/bin/crontab by its absolute path, so
-# it is pointed at the fake crontab command, and the clock gives a fixed date.
+# python-crontab looks for the crontab command when it is imported, so it is
+# pointed at the fake crontab command, and the clock gives a fixed date.
 DRIVER = r'''
 import datetime, os, runpy, sys
-script, crontab_dir, croncmd, today, *argv = sys.argv[1:]
-# As with 'python3 updateAzaanTimers.py', the folder of the script is on sys.path
+script, croncmd, today, *argv = sys.argv[1:]
+# As with 'python updateAzaanTimers.py', the folder of the script is on sys.path
 sys.path[0] = os.path.dirname(script)
-sys.path.insert(0, crontab_dir)
-import crontab
-crontab.CRONCMD = croncmd
-assert crontab.__file__.startswith(crontab_dir), crontab.__file__
+try:
+    import crontab
+    crontab.CRON_COMMAND = croncmd
+except ImportError:
+    pass  # The script finds no python-crontab either (#29)
 year, month, day = map(int, today.split('-'))
 
 class date(datetime.date):
@@ -192,7 +193,7 @@ class App:
         return subprocess.run(
             [sys.executable, *([] if site_packages else ['-S']), '-c', DRIVER,
              pathjoin(self.root, 'updateAzaanTimers.py'),
-             pathjoin(ROOT, 'crontab'), self.croncmd, today.isoformat(), *argv],
+             self.croncmd, today.isoformat(), *argv],
             cwd=self.root, env=env, text=True, timeout=60, **output)
 
     def crontab(self):

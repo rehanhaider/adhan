@@ -16,7 +16,7 @@ from os.path import join as pathjoin
 import fakes
 import updateAzaanTimers as app
 
-CronTab = app.CronTab  # the vendored library, as the app imports it
+CronTab = app.CronTab  # python-crontab, as the app imports it
 
 TODAY = datetime.date(2026, 1, 15)
 UTC_OFFSET = 5.5

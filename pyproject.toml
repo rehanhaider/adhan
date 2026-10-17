@@ -1,0 +1,8 @@
+[project]
+name = "adhan"
+version = "0.1.0"
+description = "Play the adhan at the prayer times from cron on a Raspberry Pi"
+requires-python = ">=3.11"
+dependencies = [
+    "python-crontab>=3.4.0",
+]
