@@ -29,13 +29,23 @@ except ImportError:
     CronTab = None
 else:
     class CronTab(LibraryCronTab):
-        """python-crontab, but it keeps a variable with spaces around its =.
+        """python-crontab, but it keeps two kinds of variable lines that
+        python-crontab 3.x loses, and write() would delete them from the user's
+        crontab (#29).
 
-        crontab(5) allows 'PATH = /usr/bin', but python-crontab 3.x deletes
-        that line when it reads the crontab, and write() would delete it from
-        the user's crontab. This reads it as 'PATH=/usr/bin', which cron reads
-        the same (#29).
+        crontab(5) allows 'PATH = /usr/bin'. python-crontab 3.x deletes that
+        line when it reads it. This reads it as 'PATH=/usr/bin', which cron
+        reads the same.
+
+        python-crontab 3.x gives a variable after the last job to the next job
+        that is added, which is one of ours, and the next run removes it with
+        our jobs. This moves it to the top of the crontab, as 2.0.2 did.
         """
+
+        def read(self, filename=None):
+            super().read(filename)
+            self.env.update(self._parked_env)
+            self._parked_env.clear()
 
         def append(self, item, line='', read=False, before=None):
             name, equals, value = line.partition('=')
