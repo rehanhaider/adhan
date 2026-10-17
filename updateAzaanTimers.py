@@ -19,13 +19,16 @@ import tomllib
 root_dir = dirname(abspath(__file__))
 from modules.praytimes import PrayTimes
 
-# python-crontab is in the virtual environment that uv makes (#29). Before #29
-# a copy of it was in this repo, and the update jobs ran the system python3.
-# After a git pull, such an old job finds no python-crontab: main() stops
-# before it changes the crontab, and says how to install the new jobs.
+# python-crontab 3 is in the virtual environment that uv makes (#29). Before
+# #29 a copy of version 2 was in this repo, and the update jobs ran the system
+# python3. After a git pull, such an old job finds no python-crontab, or a
+# version 2 of the system: main() stops before it changes the crontab, and
+# says how to install the new jobs.
 try:
-    from crontab import CronTab as LibraryCronTab
+    from crontab import CronTab as LibraryCronTab, __version__ as crontab_version
 except ImportError:
+    crontab_version = '0'
+if int(crontab_version.split('.')[0]) < 3:
     CronTab = None
 else:
     class CronTab(LibraryCronTab):
@@ -36,6 +39,13 @@ else:
         crontab(5) allows 'PATH = /usr/bin'. python-crontab 3.x deletes that
         line when it reads it. This reads it as 'PATH=/usr/bin', which cron
         reads the same.
+
+        python-crontab 3.x fails on a variable with an empty value, such as
+        'MAILTO='. This reads it as 'MAILTO=""', which cron reads the same.
+
+        python-crontab 3.x deletes a comment with a space before an =, such
+        as '# timeout=30 for backup', because it reads it as a variable. This
+        keeps it in its place.
 
         python-crontab 3.x gives a variable to the job on the next line, or,
         after the last job, to the next job that is added. When that is one
@@ -54,8 +64,13 @@ else:
 
         def append(self, item, line='', read=False, before=None):
             name, equals, value = line.partition('=')
-            if read and equals and name.strip().isidentifier() and not item.is_valid():
-                line = f'{name.strip()}={value.strip()}'
+            if read and equals and not item.is_valid():
+                if name.strip().isidentifier():
+                    value = value.strip() or '""'
+                    line = f'{name.strip()}={value}'
+                elif line.lstrip().startswith('#'):
+                    self.lines.append(line.rstrip('\n'))
+                    return None
             return super().append(item, line, read=read, before=before)
 
 # Players that playAzaan.sh knows how to drive, mapped to the command each one
@@ -922,7 +937,8 @@ def main(argv=None, settings_path=None, cron=None, today=None, utcOffset=None,
     next to this script, the user's crontab, today, the system timezone,
     adhan.log next to this script and TIME_SYNC_TIMEOUT.
     On a ConfigError, print it and exit 1 before the crontab is changed. With
-    --wait-for-time-sync, if the clock does not synchronize, exit 1 too.
+    --wait-for-time-sync, if the clock does not synchronize, exit 1 too. If
+    python-crontab 3 is not installed for this Python, exit 1 first (#29).
     """
     if settings_path is None:
         settings_path = pathjoin(root_dir, SETTINGS_FILE)
@@ -936,7 +952,7 @@ def main(argv=None, settings_path=None, cron=None, today=None, utcOffset=None,
     log("Updating the prayer times")
     if CronTab is None:
         python = f"{root_dir}/.venv/bin/python"
-        log(f"python-crontab is not installed for {sys.executable}. The update jobs "
+        log(f"python-crontab 3 is not installed for {sys.executable}. The update jobs "
             f"run {python} now (#29). Run 'uv sync' in {root_dir}, then run "
             f"'{python} {root_dir}/updateAzaanTimers.py' once to install the "
             f"new jobs. See README.md. The prayer times were not updated.")
