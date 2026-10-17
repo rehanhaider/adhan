@@ -938,7 +938,8 @@ def main(argv=None, settings_path=None, cron=None, today=None, utcOffset=None,
     adhan.log next to this script and TIME_SYNC_TIMEOUT.
     On a ConfigError, print it and exit 1 before the crontab is changed. With
     --wait-for-time-sync, if the clock does not synchronize, exit 1 too. If
-    python-crontab 3 is not installed for this Python, exit 1 first (#29).
+    python-crontab 3 is not installed for this Python, or .venv/bin/python
+    does not exist, exit 1 first (#29).
     """
     if settings_path is None:
         settings_path = pathjoin(root_dir, SETTINGS_FILE)
@@ -950,9 +951,13 @@ def main(argv=None, settings_path=None, cron=None, today=None, utcOffset=None,
     # An error that Python or argparse writes has no timestamp. After this
     # line, it stays with this run when the log is pruned.
     log("Updating the prayer times")
-    if CronTab is None:
-        python = f"{root_dir}/.venv/bin/python"
-        log(f"python-crontab 3 is not installed for {sys.executable}. The update jobs "
+    # The update jobs run this Python, so without it they could not renew the
+    # schedule (#29)
+    python = f"{root_dir}/.venv/bin/python"
+    if CronTab is None or not os.path.exists(python):
+        reason = (f"python-crontab 3 is not installed for {sys.executable}." if CronTab is None
+                  else f"{python} does not exist.")
+        log(f"{reason} The update jobs "
             f"run {python} now (#29). Run 'uv sync' in {root_dir}, then run "
             f"'{python} {root_dir}/updateAzaanTimers.py' once to install the "
             f"new jobs. See README.md. The prayer times were not updated.")
