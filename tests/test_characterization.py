@@ -152,6 +152,17 @@ class FullRunTest(unittest.TestCase):
         self.assertTrue(self.app.crontab().startswith('PATH=/usr/bin:/bin\n' + USER_JOB),
                         self.app.crontab())
 
+    def test_a_variable_after_the_last_job_stays(self):
+        """C3: python-crontab 3.x gives a variable after the user's last job to
+        the next job, which is our first job. The next run removes our jobs,
+        and the variable with them. The run moves it to the top of the crontab,
+        as python-crontab 2.0.2 did (#29)."""
+        self.app = fakes.App(self, crontab=USER_JOB + 'MAILTO=""\n')
+        self.assertRunOk(*FIRST_RUN)
+        self.assertRunOk()
+        self.assertTrue(self.app.crontab().startswith('MAILTO=""\n' + USER_JOB),
+                        self.app.crontab())
+
     def test_old_update_job_without_the_library_keeps_the_crontab(self):
         """C4: before #29, the update jobs ran the system python3 with a copy of
         python-crontab in the repo. After a git pull, the old job finds no
