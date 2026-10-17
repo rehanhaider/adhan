@@ -155,6 +155,14 @@ class FullRunTest(unittest.TestCase):
         self.assertTrue(self.app.crontab().startswith('PATH=/usr/bin:/bin\n' + USER_JOB),
                         self.app.crontab())
 
+    def test_a_variable_with_a_dash_in_its_name_stays(self):
+        """C3: cron takes the word before the = as the name, so 'MY-VAR = x' is a
+        variable too. The run writes it without the spaces (#29)."""
+        self.app = fakes.App(self, crontab='MY-VAR = x\n' + USER_JOB)
+        self.assertRunOk(*FIRST_RUN)
+        self.assertTrue(self.app.crontab().startswith('MY-VAR=x\n' + USER_JOB),
+                        self.app.crontab())
+
     def test_a_variable_after_the_last_job_stays(self):
         """C3: python-crontab 3.x gives a variable after the user's last job to
         the next job, which is our first job. The next run removes our jobs,
