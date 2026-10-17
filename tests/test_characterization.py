@@ -12,6 +12,7 @@ tests in test_main.py cover the other cases through main() with fakes.
 """
 
 import datetime
+import os
 import unittest
 
 import fakes
@@ -189,6 +190,19 @@ class FullRunTest(unittest.TestCase):
         self.assertRunOk(*FIRST_RUN)
         self.assertTrue(self.app.crontab().startswith('# timeout=30 for backup\n' + USER_JOB),
                         self.app.crontab())
+
+    def test_old_update_job_without_the_virtual_environment_keeps_the_crontab(self):
+        """C4: the system python3 of an old update job can have python-crontab 3.
+        Without .venv, the new update jobs could not run, so it stops before it
+        changes the crontab, as without the library (#29)."""
+        self.assertRunOk(*FIRST_RUN)
+        crontab = self.app.crontab()
+        os.remove(self.app.python)
+        result = self.app.run(today=TODAY)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn(f'{self.app.python} does not exist', result.stdout)
+        self.assertIn('uv sync', result.stdout)
+        self.assertEqual(self.app.crontab(), crontab)
 
     def test_old_update_job_with_an_old_library_keeps_the_crontab(self):
         """C4: the system python3 of an old update job can have python-crontab 2.x,

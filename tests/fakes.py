@@ -168,6 +168,10 @@ class App:
         # The update checks that the adhan files are there (#10). Nothing writes
         # to them, so a link to the real folder is enough.
         os.symlink(pathjoin(ROOT, 'media'), pathjoin(self.root, 'media'))
+        # The update jobs run the Python of the virtual environment (#29)
+        os.makedirs(pathjoin(self.root, '.venv', 'bin'))
+        self.python = pathjoin(self.root, '.venv', 'bin', 'python')
+        os.symlink(sys.executable, self.python)
         self.settings_path = pathjoin(self.root, 'adhan.toml')
         self.tab = pathjoin(self.root, 'user.crontab')
         with open(self.tab, 'w') as fh:
