@@ -36,8 +36,9 @@ else:
         python-crontab 3.x loses or fails on, and that write() would delete
         (#29).
 
-        crontab(5) allows 'PATH = /usr/bin'. python-crontab 3.x deletes that
-        line when it reads it. This reads it as 'PATH=/usr/bin', which cron
+        crontab(5) allows 'PATH = /usr/bin', and cron takes any word before
+        the = as the name, as in 'MY-VAR = x'. python-crontab 3.x deletes such
+        a line when it reads it. This reads it as 'PATH=/usr/bin', which cron
         reads the same.
 
         python-crontab 3.x fails on a variable with an empty value, such as
@@ -65,7 +66,7 @@ else:
         def append(self, item, line='', read=False, before=None):
             name, equals, value = line.partition('=')
             if read and equals and not item.is_valid():
-                if name.strip().isidentifier():
+                if len(name.split()) == 1 and not name.lstrip().startswith('#'):
                     value = value.strip() or '""'
                     line = f'{name.strip()}={value}'
                 elif line.lstrip().startswith('#'):
