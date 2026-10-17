@@ -32,9 +32,9 @@ if int(crontab_version.split('.')[0]) < 3:
     CronTab = None
 else:
     class CronTab(LibraryCronTab):
-        """python-crontab, but it keeps two kinds of variable lines that
-        python-crontab 3.x loses, and write() would delete them from the user's
-        crontab (#29).
+        """python-crontab, but it keeps the lines of the user's crontab that
+        python-crontab 3.x loses or fails on, and that write() would delete
+        (#29).
 
         crontab(5) allows 'PATH = /usr/bin'. python-crontab 3.x deletes that
         line when it reads it. This reads it as 'PATH=/usr/bin', which cron
