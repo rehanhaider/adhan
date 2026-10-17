@@ -37,13 +37,18 @@ else:
         line when it reads it. This reads it as 'PATH=/usr/bin', which cron
         reads the same.
 
-        python-crontab 3.x gives a variable after the last job to the next job
-        that is added, which is one of ours, and the next run removes it with
-        our jobs. This moves it to the top of the crontab, as 2.0.2 did.
+        python-crontab 3.x gives a variable to the job on the next line, or,
+        after the last job, to the next job that is added. When that is one
+        of ours, the run removes the variable with it. This moves such a
+        variable to the top of the crontab, as 2.0.2 did.
         """
 
         def read(self, filename=None):
             super().read(filename)
+            for job in self.crons:
+                if job.comment == JOB_COMMENT:
+                    self.env.update(job.env)
+                    job.env.clear()
             self.env.update(self._parked_env)
             self._parked_env.clear()
 
