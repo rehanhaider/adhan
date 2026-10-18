@@ -17,10 +17,76 @@ import tomllib
 
 
 root_dir = dirname(abspath(__file__))
-sys.path.insert(0, pathjoin(root_dir, 'crontab'))
 from modules.praytimes import PrayTimes
 
-from crontab import CronTab
+# python-crontab 3 is in the virtual environment that uv makes (#29). Before
+# #29 a copy of version 2 was in this repo, and the update jobs ran the system
+# python3. After a git pull, such an old job finds no python-crontab, or a
+# version 2 of the system: main() stops before it changes the crontab, and
+# says how to install the new jobs.
+try:
+    from crontab import CronTab as LibraryCronTab, __version__ as crontab_version
+except ImportError:
+    crontab_version = '0'
+if int(crontab_version.split('.')[0]) < 3:
+    CronTab = None
+else:
+    class CronTab(LibraryCronTab):
+        """python-crontab, but it keeps the lines of the user's crontab that
+        python-crontab 3.x loses or fails on, and that write() would delete
+        (#29).
+
+        crontab(5) allows 'PATH = /usr/bin', and cron takes any word before
+        the = as the name, as in 'MY-VAR = x'. python-crontab 3.x deletes such
+        a line when it reads it. This reads it as 'PATH=/usr/bin', which cron
+        reads the same.
+
+        python-crontab 3.x fails on a variable with an empty value, such as
+        'MAILTO='. This reads it as 'MAILTO=""', which cron reads the same.
+
+        python-crontab 3.x deletes a comment with a space before an =, such
+        as '# timeout=30 for backup', because it reads it as a variable. It
+        does the same with a job that it cannot read, such as
+        '0 30 * * * backup.sh --full=1', and writes such a job without an = as
+        '# DISABLED LINE'. Cron accepts an hour of 30. This keeps these lines
+        in their place, as they were, below the variables above them.
+
+        python-crontab 3.x gives a variable to the job on the next line, or,
+        after the last job, to the next job that is added. When that is one
+        of ours, the run removes the variable with it. This moves such a
+        variable to the top of the crontab, as 2.0.2 did.
+        """
+
+        def read(self, filename=None):
+            super().read(filename)
+            for job in self.crons:
+                if job.comment == JOB_COMMENT:
+                    self.env.update(job.env)
+                    job.env.clear()
+            self.env.update(self._parked_env)
+            self._parked_env.clear()
+
+        def append(self, item, line='', read=False, before=None):
+            name, equals, value = line.partition('=')
+            if read and line.strip() and not item.is_valid():
+                if equals and len(name.split()) == 1 and not name.lstrip().startswith('#'):
+                    value = value.strip() or '""'
+                    line = f'{name.strip()}={value}'
+                elif equals or not line.lstrip().startswith('#'):
+                    # Keep the line in its place, below the variables above it
+                    for key, value in self._parked_env.items():
+                        self.lines.append(f'{key}={value}' if value else f'{key}=""')
+                    self._parked_env.clear()
+                    self.lines.append(line.rstrip('\n'))
+                    return None
+            return super().append(item, line, read=read, before=before)
+
+        def render(self, errors=False):
+            text = super().render(errors)
+            for line in self.lines:
+                if isinstance(line, str) and line.strip() and not line.strip().startswith('#'):
+                    text = text.replace(f'# DISABLED LINE\n# {line}', line, 1)
+            return text
 
 # Players that playAzaan.sh knows how to drive, mapped to the command each one
 # needs on PATH. Add a player here and a matching case in playAzaan.sh.
@@ -695,11 +761,14 @@ def buildJobs(times, settings, root_dir, date):
                         tuple(sorted(weekdays)) if len(weekdays) < 7 else None,
                         play(mediaPath(rule.file, root_dir), volume)))
     # Run this script again overnight. It also deletes the old lines of the log.
-    jobs.append(Job(3, 15, None, None, f"python3 {root_dir}/updateAzaanTimers.py {strLog}"))
+    # It runs the Python of the virtual environment that uv makes (#29), not
+    # uv run: uv is not on the PATH of cron, and uv run can download at run time.
+    strUpdate = f"{root_dir}/.venv/bin/python {root_dir}/updateAzaanTimers.py"
+    jobs.append(Job(3, 15, None, None, f"{strUpdate} {strLog}"))
     # And after each reboot, as the Pi can be off at 03:15. That update waits
     # for the clock first, because a Pi has no clock battery (#15).
     jobs.append(Job(None, None, None, None,
-                    f"python3 {root_dir}/updateAzaanTimers.py --wait-for-time-sync {strLog}",
+                    f"{strUpdate} --wait-for-time-sync {strLog}",
                     reboot=True))
     return jobs
 
@@ -883,7 +952,9 @@ def main(argv=None, settings_path=None, cron=None, today=None, utcOffset=None,
     next to this script, the user's crontab, today, the system timezone,
     adhan.log next to this script and TIME_SYNC_TIMEOUT.
     On a ConfigError, print it and exit 1 before the crontab is changed. With
-    --wait-for-time-sync, if the clock does not synchronize, exit 1 too.
+    --wait-for-time-sync, if the clock does not synchronize, exit 1 too. If
+    python-crontab 3 is not installed for this Python, or .venv/bin/python
+    does not exist, exit 1 first (#29).
     """
     if settings_path is None:
         settings_path = pathjoin(root_dir, SETTINGS_FILE)
@@ -895,6 +966,17 @@ def main(argv=None, settings_path=None, cron=None, today=None, utcOffset=None,
     # An error that Python or argparse writes has no timestamp. After this
     # line, it stays with this run when the log is pruned.
     log("Updating the prayer times")
+    # The update jobs run this Python, so without it they could not renew the
+    # schedule (#29)
+    python = f"{root_dir}/.venv/bin/python"
+    if CronTab is None or not os.path.exists(python):
+        reason = (f"python-crontab 3 is not installed for {sys.executable}." if CronTab is None
+                  else f"{python} does not exist.")
+        log(f"{reason} The update jobs "
+            f"run {python} now (#29). Run 'uv sync' in {root_dir}, then run "
+            f"'{python} {root_dir}/updateAzaanTimers.py' once to install the "
+            f"new jobs. See README.md. The prayer times were not updated.")
+        sys.exit(1)
     args = parseArgs().parse_args(argv)
 
     # The date and the timezone offset come from the clock, so get them after

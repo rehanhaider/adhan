@@ -20,11 +20,11 @@ refer to the fork.
 Run the full suite with:
 
 ```bash
-python3 -m unittest discover tests
+uv run python -m unittest discover tests
 ```
 
-It uses only the Python standard library. You do not have to install
-anything on the Pi. There is no CI: run the suite yourself.
+It uses python-crontab, which `uv sync` installs into `.venv` (#29), and
+the Python standard library. There is no CI: run the suite yourself.
 
 The tests protect these promises (see #16):
 

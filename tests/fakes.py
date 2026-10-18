@@ -4,7 +4,7 @@ No test may read or write the real user crontab, the real adhan.toml, the
 real adhan.log or the speakers. The helpers here give the tests temporary
 folders, a fake crontab command, a fake cvlc and a fixed date.
 
-Run the tests with: python3 -m unittest discover tests
+Run the tests with: uv run python -m unittest discover tests
 """
 
 import os
@@ -22,17 +22,18 @@ REAL_LOG = pathjoin(ROOT, 'adhan.log')
 sys.path.insert(0, ROOT)
 
 # Runs updateAzaanTimers.py as cron does, with two system boundaries replaced:
-# the vendored crontab library calls /usr/bin/crontab by its absolute path, so
-# it is pointed at the fake crontab command, and the clock gives a fixed date.
+# python-crontab looks for the crontab command when it is imported, so it is
+# pointed at the fake crontab command, and the clock gives a fixed date.
 DRIVER = r'''
 import datetime, os, runpy, sys
-script, crontab_dir, croncmd, today, *argv = sys.argv[1:]
-# As with 'python3 updateAzaanTimers.py', the folder of the script is on sys.path
+script, croncmd, today, *argv = sys.argv[1:]
+# As with 'python updateAzaanTimers.py', the folder of the script is on sys.path
 sys.path[0] = os.path.dirname(script)
-sys.path.insert(0, crontab_dir)
-import crontab
-crontab.CRONCMD = croncmd
-assert crontab.__file__.startswith(crontab_dir), crontab.__file__
+try:
+    import crontab
+    crontab.CRON_COMMAND = croncmd
+except ImportError:
+    pass  # The script finds no python-crontab either (#29)
 year, month, day = map(int, today.split('-'))
 
 class date(datetime.date):
@@ -167,6 +168,10 @@ class App:
         # The update checks that the adhan files are there (#10). Nothing writes
         # to them, so a link to the real folder is enough.
         os.symlink(pathjoin(ROOT, 'media'), pathjoin(self.root, 'media'))
+        # The update jobs run the Python of the virtual environment (#29)
+        os.makedirs(pathjoin(self.root, '.venv', 'bin'))
+        self.python = pathjoin(self.root, '.venv', 'bin', 'python')
+        os.symlink(sys.executable, self.python)
         self.settings_path = pathjoin(self.root, 'adhan.toml')
         self.tab = pathjoin(self.root, 'user.crontab')
         with open(self.tab, 'w') as fh:
@@ -178,19 +183,21 @@ class App:
         os.mkdir(self.bin)
         fakeCvlc(self.bin, pathjoin(self.root, 'events'))
 
-    def run(self, *argv, today, log=None):
+    def run(self, *argv, today, log=None, site_packages=True):
         """Run updateAzaanTimers.py on the given date in UTC +5:30.
 
         With log, stdout and stderr go to that open file, as with
-        >> adhan.log 2>&1 in the cron job.
+        >> adhan.log 2>&1 in the cron job. With site_packages=False, Python
+        starts with -S and has no installed packages, as the system python3
+        of an old cron job (#29).
         """
         env = dict(os.environ, PATH=self.bin, TZ='IST-5:30')
         output = (dict(stdout=log, stderr=subprocess.STDOUT) if log
                   else dict(capture_output=True))
         return subprocess.run(
-            [sys.executable, '-c', DRIVER,
+            [sys.executable, *([] if site_packages else ['-S']), '-c', DRIVER,
              pathjoin(self.root, 'updateAzaanTimers.py'),
-             pathjoin(ROOT, 'crontab'), self.croncmd, today.isoformat(), *argv],
+             self.croncmd, today.isoformat(), *argv],
             cwd=self.root, env=env, text=True, timeout=60, **output)
 
     def crontab(self):

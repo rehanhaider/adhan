@@ -33,16 +33,46 @@ at random times. We recommend a wired speaker.
   git clone https://github.com/rehanhaider/adhan.git
   ```
   You now have an `adhan` directory in your home directory.
+3. Install [uv](https://docs.astral.sh/uv/) with its official installer. It puts `uv` in
+  `~/.local/bin` and does not need `sudo`:
+  ```bash
+  curl -LsSf https://astral.sh/uv/install.sh | sh
+  ```
+  Open a new terminal, so that `uv` is on your `PATH`.
+4. Install the Python library of the script, python-crontab:
+  ```bash
+  cd ~/adhan
+  uv sync
+  ```
+  uv makes a virtual environment in `~/adhan/.venv` and installs the library in it. uv
+  uses the Python 3.11 of Raspberry Pi OS Bookworm, so it does not download a second
+  Python. The cron jobs run `~/adhan/.venv/bin/python`, not `uv`, so they do not need
+  the network or `uv` at run time.
 
 The examples in this README use `~/adhan`. You can clone the repository into a different
 directory. The script finds its files from its own location, and the cron jobs use the full
 path of that directory.
 
+### Update an install from before uv
+Before [#29](https://github.com/rehanhaider/adhan/issues/29), a copy of python-crontab was
+in this repository and the cron jobs ran `python3`. After `git pull`, the old nightly job
+finds no python-crontab. It stops, does not change your crontab, and writes the steps
+below to `adhan.log`. Until you do these steps, the prayer times are not updated:
+
+1. Install uv (step 3 above).
+2. Install the library and run the script once. The run replaces the old jobs with jobs
+   that run `~/adhan/.venv/bin/python`:
+  ```bash
+  cd ~/adhan
+  uv sync
+  ~/adhan/.venv/bin/python ~/adhan/updateAzaanTimers.py
+  ```
+
 ## Run it for the first time
 Type this command:
 
 ```bash
-python3 ~/adhan/updateAzaanTimers.py --lat <YOUR_LAT> --lon <YOUR_LNG> --method <METHOD>
+~/adhan/.venv/bin/python ~/adhan/updateAzaanTimers.py --lat <YOUR_LAT> --lon <YOUR_LNG> --method <METHOD>
 ```
 
 Replace the arguments with your location and your calculation method:
@@ -98,8 +128,8 @@ If the script runs correctly, the output is similar to this. `USER` is your user
 2026-05-15 12:00:00 50 15 * * * /home/USER/adhan/playAzaan.sh /home/USER/adhan/media/Adhan-Makkah1.mp3 0 vlc >> /home/USER/adhan/adhan.log 2>&1 # rpiAdhanClockJob
 2026-05-15 12:00:00 3 19 * * * /home/USER/adhan/playAzaan.sh /home/USER/adhan/media/Adhan-Makkah1.mp3 0 vlc >> /home/USER/adhan/adhan.log 2>&1 # rpiAdhanClockJob
 2026-05-15 12:00:00 32 20 * * * /home/USER/adhan/playAzaan.sh /home/USER/adhan/media/Adhan-Makkah1.mp3 0 vlc >> /home/USER/adhan/adhan.log 2>&1 # rpiAdhanClockJob
-2026-05-15 12:00:00 15 3 * * * python3 /home/USER/adhan/updateAzaanTimers.py >> /home/USER/adhan/adhan.log 2>&1 # rpiAdhanClockJob
-2026-05-15 12:00:00 @reboot python3 /home/USER/adhan/updateAzaanTimers.py --wait-for-time-sync >> /home/USER/adhan/adhan.log 2>&1 # rpiAdhanClockJob
+2026-05-15 12:00:00 15 3 * * * /home/USER/adhan/.venv/bin/python /home/USER/adhan/updateAzaanTimers.py >> /home/USER/adhan/adhan.log 2>&1 # rpiAdhanClockJob
+2026-05-15 12:00:00 @reboot /home/USER/adhan/.venv/bin/python /home/USER/adhan/updateAzaanTimers.py --wait-for-time-sync >> /home/USER/adhan/adhan.log 2>&1 # rpiAdhanClockJob
 2026-05-15 12:00:00 ---------------------------------
 2026-05-15 12:00:00 Script execution finished at: 2026-05-15 12:00:00.123456
 ```
@@ -137,13 +167,13 @@ After you edit `adhan.toml`, the new values apply at the next run. To apply them
 run the script again without arguments:
 
 ```bash
-python3 ~/adhan/updateAzaanTimers.py
+~/adhan/.venv/bin/python ~/adhan/updateAzaanTimers.py
 ```
 
 To see all the arguments, type:
 
 ```bash
-python3 ~/adhan/updateAzaanTimers.py -h
+~/adhan/.venv/bin/python ~/adhan/updateAzaanTimers.py -h
 ```
 
 If a value is not correct, the script stops and writes the reason to the output. It does
@@ -255,7 +285,7 @@ The Asr school sets the method for the Asr time. The Hanafi school gives a later
 For example:
 
 ```bash
-python3 ~/adhan/updateAzaanTimers.py --asr Hanafi
+~/adhan/.venv/bin/python ~/adhan/updateAzaanTimers.py --asr Hanafi
 ```
 
 ### Volume
@@ -284,7 +314,7 @@ later. A negative number makes it earlier.
 For example, this command plays the Isha adhan 10 minutes later:
 
 ```bash
-python3 ~/adhan/updateAzaanTimers.py --isha-offset 10
+~/adhan/.venv/bin/python ~/adhan/updateAzaanTimers.py --isha-offset 10
 ```
 
 ### Turn a prayer on or off
@@ -299,7 +329,7 @@ that prayer.
 For example, this command turns off the Fajr adhan:
 
 ```bash
-python3 ~/adhan/updateAzaanTimers.py --no-play-fajr
+~/adhan/.venv/bin/python ~/adhan/updateAzaanTimers.py --no-play-fajr
 ```
 
 ### Audio files
@@ -317,7 +347,7 @@ directory, or the full path of a file. The `media` directory has these adhan fil
 For example, this command plays `Adhan-Madinah.mp3` for Isha:
 
 ```bash
-python3 ~/adhan/updateAzaanTimers.py --isha-audio Adhan-Madinah.mp3
+~/adhan/.venv/bin/python ~/adhan/updateAzaanTimers.py --isha-audio Adhan-Madinah.mp3
 ```
 
 The script makes sure that the file of each prayer that is on is there and that it can read
@@ -336,7 +366,7 @@ silence before the adhan, so the speaker is awake when the adhan starts.
 For example:
 
 ```bash
-python3 ~/adhan/updateAzaanTimers.py --leadin-seconds 2
+~/adhan/.venv/bin/python ~/adhan/updateAzaanTimers.py --leadin-seconds 2
 ```
 
 `playAzaan.sh` plays `media/silence-1s.wav` one time for each second. If that file is not
@@ -455,7 +485,7 @@ The adhan can play through VLC (`cvlc`) or the PulseAudio `paplay`. VLC is the d
 For example:
 
 ```bash
-python3 ~/adhan/updateAzaanTimers.py --player paplay
+~/adhan/.venv/bin/python ~/adhan/updateAzaanTimers.py --player paplay
 ```
 
 You must install only the selected player. Each run of `updateAzaanTimers.py` makes sure
@@ -524,6 +554,15 @@ chmod u+x ./after-hooks.d/01-resume-quran-speaker.sh
    and a line when it ends, with the errors from the player. Each line starts with the date
    and time. The log keeps the lines of the last 30 days. To see the log, type
    `cat ~/adhan/adhan.log`.
+
+## Tests
+The tests use only python-crontab and the Python standard library. They do not change your
+crontab, `adhan.toml` or `adhan.log`, and they do not play audio. To run them, type:
+
+```bash
+cd ~/adhan
+uv run python -m unittest discover tests
+```
 
 ## Credits
 This repository is the maintained fork of [achaudhry/adhan](https://github.com/achaudhry/adhan).

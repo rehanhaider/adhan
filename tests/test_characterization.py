@@ -6,17 +6,21 @@ script, the user crontab and the system timezone. The expected crontab was
 recorded from the script before the refactor into a core and a shell (#16).
 #7 removed the job that cleared the log every month. #15 added the update
 after a reboot. #42 moved the settings from settings.ini to adhan.toml. #43
-removed the [surah_baqarah] table, which is a rule now. The
+removed the [surah_baqarah] table, which is a rule now. #29 changed python3
+in the update jobs to the Python of the virtual environment. The
 tests in test_main.py cover the other cases through main() with fakes.
 """
 
 import datetime
+import os
 import unittest
 
 import fakes
 
 TODAY = datetime.date(2026, 1, 15)
 USER_JOB = '@daily /home/user/backup.sh\n'
+# A job of an earlier run, which the next run replaces
+OUR_OLD_JOB = '0 5 * * * /home/user/adhan/playAzaan.sh x.mp3 0 vlc # rpiAdhanClockJob\n'
 FIRST_RUN = ('--lat', '12.8369', '--lon', '77.4089', '--method', 'Karachi',
              '--azaan-volume', '500', '--fajr-azaan-volume', '-500')
 
@@ -79,8 +83,10 @@ def expectedCrontab(root, fajr_volume, volume):
             PRAYER_TIMES, ['Adhan-fajr.mp3'] + ['Adhan-Makkah1.mp3'] * 4,
             [fajr_volume] + [volume] * 4):
         lines.append(f'{minute} {hour} * * * {play}/{audio} {vol} vlc {log}')
-    lines.append(f'15 3 * * * python3 {root}/updateAzaanTimers.py {log}')
-    lines.append(f'@reboot python3 {root}/updateAzaanTimers.py --wait-for-time-sync {log}')
+    # The Python of the virtual environment that uv makes, not python3 (#29)
+    python = f'{root}/.venv/bin/python'
+    lines.append(f'15 3 * * * {python} {root}/updateAzaanTimers.py {log}')
+    lines.append(f'@reboot {python} {root}/updateAzaanTimers.py --wait-for-time-sync {log}')
     return '\n'.join(lines) + '\n'
 
 
@@ -139,6 +145,130 @@ class FullRunTest(unittest.TestCase):
         self.assertEqual(self.app.crontab(), USER_JOB)
         self.assertIsNone(self.app.settings())
         self.assertEqual(fakes.readBytes(ini), OLD_SETTINGS_INI.encode())
+
+    def test_a_variable_with_spaces_around_the_equals_sign_stays(self):
+        """C3: crontab(5) allows spaces around the = of a variable. python-crontab
+        3.x deletes such a line when it reads the crontab, so the run writes it
+        without the spaces (#29). Cron reads both lines the same."""
+        self.app = fakes.App(self, crontab='PATH = /usr/bin:/bin\n' + USER_JOB)
+        self.assertRunOk(*FIRST_RUN)
+        self.assertTrue(self.app.crontab().startswith('PATH=/usr/bin:/bin\n' + USER_JOB),
+                        self.app.crontab())
+
+    def test_a_variable_with_a_dash_in_its_name_stays(self):
+        """C3: cron takes the word before the = as the name, so 'MY-VAR = x' is a
+        variable too. The run writes it without the spaces (#29)."""
+        self.app = fakes.App(self, crontab='MY-VAR = x\n' + USER_JOB)
+        self.assertRunOk(*FIRST_RUN)
+        self.assertTrue(self.app.crontab().startswith('MY-VAR=x\n' + USER_JOB),
+                        self.app.crontab())
+
+    def test_a_job_that_python_crontab_cannot_read_stays(self):
+        """C3: crontab accepts an hour of 30, but python-crontab 3.x cannot read
+        it. It deletes such a line when it has an =, and writes the other as
+        '# DISABLED LINE'. The run writes both back as they were (#29)."""
+        lines = ('0 30 * * * /home/user/backup.sh --full=1\n'
+                 '0 30 * * * /home/user/backup.sh\n')
+        self.app = fakes.App(self, crontab=lines + USER_JOB)
+        self.assertRunOk(*FIRST_RUN)
+        self.assertTrue(self.app.crontab().startswith(lines + USER_JOB), self.app.crontab())
+
+    def test_a_variable_above_a_job_that_python_crontab_cannot_read_stays_above_it(self):
+        """C3: python-crontab 3.x gives a variable to the next job that it can
+        read, below the job that it cannot read. The run keeps the variable
+        above that job, so that cron gives it to that job too (#29)."""
+        lines = ('PATH=/usr/bin\n0 30 * * * /home/user/backup.sh --full=1\n'
+                 'MAILTO=""\n0 30 * * * /home/user/backup.sh\n')
+        self.app = fakes.App(self, crontab=USER_JOB + lines + USER_JOB)
+        self.assertRunOk(*FIRST_RUN)
+        self.assertTrue(self.app.crontab().startswith(USER_JOB + lines + USER_JOB),
+                        self.app.crontab())
+
+    def test_a_variable_after_the_last_job_stays(self):
+        """C3: python-crontab 3.x gives a variable after the user's last job to
+        the next job, which is our first job. The next run removes our jobs,
+        and the variable with them. The run moves it to the top of the crontab,
+        as python-crontab 2.0.2 did (#29)."""
+        self.app = fakes.App(self, crontab=USER_JOB + 'MAILTO=""\n')
+        self.assertRunOk(*FIRST_RUN)
+        self.assertRunOk()
+        self.assertTrue(self.app.crontab().startswith('MAILTO=""\n' + USER_JOB),
+                        self.app.crontab())
+
+    def test_a_variable_above_our_jobs_stays(self):
+        """C3: python-crontab 3.x gives a variable to the job on the next line.
+        When that is one of our jobs, the run removes the variable with it. The
+        run moves it to the top of the crontab, as python-crontab 2.0.2 did (#29)."""
+        self.app = fakes.App(self, crontab='MAILTO=""\n' + OUR_OLD_JOB)
+        self.assertRunOk(*FIRST_RUN)
+        self.assertTrue(self.app.crontab().startswith('MAILTO=""\n'), self.app.crontab())
+
+    def test_a_variable_with_an_empty_value_stays(self):
+        """C3: 'MAILTO=' stops the mails of cron. python-crontab 3.x fails on a
+        variable with an empty value, so the run reads it as 'MAILTO=""', which
+        cron reads the same (#29)."""
+        self.app = fakes.App(self, crontab='MAILTO=\n' + USER_JOB)
+        self.assertRunOk(*FIRST_RUN)
+        self.assertTrue(self.app.crontab().startswith('MAILTO=""\n' + USER_JOB),
+                        self.app.crontab())
+
+    def test_a_comment_with_an_equals_sign_stays(self):
+        """C3: python-crontab 3.x deletes a comment that has a space before an =,
+        because it reads it as a variable. The run keeps it (#29)."""
+        self.app = fakes.App(self, crontab='# timeout=30 for backup\n' + USER_JOB)
+        self.assertRunOk(*FIRST_RUN)
+        self.assertTrue(self.app.crontab().startswith('# timeout=30 for backup\n' + USER_JOB),
+                        self.app.crontab())
+
+    def test_old_update_job_without_the_virtual_environment_keeps_the_crontab(self):
+        """C4: the system python3 of an old update job can have python-crontab 3.
+        Without .venv, the new update jobs could not run, so it stops before it
+        changes the crontab, as without the library (#29)."""
+        self.assertRunOk(*FIRST_RUN)
+        crontab = self.app.crontab()
+        os.remove(self.app.python)
+        result = self.app.run(today=TODAY)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn(f'{self.app.python} does not exist', result.stdout)
+        self.assertIn('uv sync', result.stdout)
+        self.assertEqual(self.app.crontab(), crontab)
+
+    def test_old_update_job_with_an_old_library_keeps_the_crontab(self):
+        """C4: the system python3 of an old update job can have python-crontab 2.x,
+        for example the python3-crontab package of Debian. It stops before it
+        changes the crontab, as without the library (#29)."""
+        self.assertRunOk(*FIRST_RUN)
+        crontab = self.app.crontab()
+        # The folder of the script is first on sys.path, so this module is imported
+        with open(f'{self.app.root}/crontab.py', 'w') as fh:
+            fh.write("__version__ = '2.7.1'\n\nclass CronTab:\n    pass\n")
+        result = self.app.run(today=TODAY)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn('uv sync', result.stdout)
+        self.assertEqual(self.app.crontab(), crontab)
+
+    def test_old_update_job_without_the_library_keeps_the_crontab(self):
+        """C4: before #29, the update jobs ran the system python3 with a copy of
+        python-crontab in the repo. After a git pull, the old job finds no
+        python-crontab. It stops before it changes the crontab and adhan.toml,
+        and the log says how to install the new jobs."""
+        self.assertRunOk(*FIRST_RUN)
+        crontab = self.app.crontab()
+        settings = self.app.settings()
+        log_path = f'{self.app.root}/adhan.log'
+        with open(log_path, 'a') as log:
+            result = self.app.run(today=TODAY, log=log, site_packages=False)
+        self.assertNotEqual(result.returncode, 0)
+        with open(log_path) as fh:
+            text = fh.read()
+        for line in text.splitlines():
+            self.assertTrue(line.startswith('2026-01-15 12:00:00 '), text)
+        self.assertIn('python-crontab', text)
+        self.assertIn('uv sync', text)
+        self.assertIn(f'{self.app.root}/.venv/bin/python {self.app.root}/updateAzaanTimers.py',
+                      text)
+        self.assertEqual(self.app.crontab(), crontab)
+        self.assertEqual(self.app.settings(), settings)
 
 
 if __name__ == '__main__':
