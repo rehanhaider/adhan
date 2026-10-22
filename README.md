@@ -103,10 +103,11 @@ to 1 minute later. With the 2 minutes, the adhan does not play before the sun ha
 `Tehran` and `Jafari` put Maghrib later, when the sun is 4.5° or 4° below the horizon, so
 for them the 2 minutes are only extra time.
 
-The 2 minutes are enough when your eyes are up to about 160 m above the land at your
-horizon in Bengaluru, and up to about 45 m in London. Far from the equator, the sun goes
-down more slowly, so the same minutes cover less height. If your home is higher, add
-an [offset](#offsets) to Maghrib.
+The script rounds Maghrib to the nearest minute, and the adhan starts at the start of that
+minute. So the adhan plays 1.5 to 2.5 minutes after the time of the method. This is enough
+when your eyes are up to about 90 m above the land at your horizon in Bengaluru, and up to
+about 25 m in London. Far from the equator, the sun goes down more slowly, so the same
+minutes cover less height. If your home is higher, add an [offset](#offsets) to Maghrib.
 
 The 2 minutes are not a setting, and the script does not save them in `adhan.toml`. They
 move Maghrib only. The Maghrib offset adds to them, so `--maghrib-offset -2` gives the time
