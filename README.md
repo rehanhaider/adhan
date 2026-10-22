@@ -94,6 +94,22 @@ The script uses the timezone of the Raspberry Pi. Make sure that the timezone is
 | `Tehran` | Institute of Geophysics, University of Tehran | Fajr 17.7°, Isha 14°, Maghrib 4.5°, Jafari midnight |
 | `Jafari` | Shia Ithna-Ashari, Leva Institute, Qum | Fajr 16°, Isha 14°, Maghrib 4°, Jafari midnight |
 
+### Maghrib has 2 safety minutes
+The script adds 2 minutes to the Maghrib time of each method. The methods calculate the
+sunset as if the land at the horizon is at the height of your eyes. When the land at the
+horizon is lower than your eyes, you see the sun for longer, so the sun sets later. For
+example, the land around Bengaluru makes the sunset up to 1 minute later. With the 2
+minutes, the adhan does not play before the sun has set.
+
+The 2 minutes are enough when your eyes are up to about 160 m above the land at your
+horizon in Bengaluru, and up to about 45 m in London. Far from the equator, the sun goes
+down more slowly, so the same minutes cover less height. If your home is higher, add
+an [offset](#offsets) to Maghrib.
+
+The 2 minutes are not a setting, and the script does not save them in `adhan.toml`. They
+move Maghrib only. The Maghrib offset adds to them, so `--maghrib-offset -2` gives the time
+of the method.
+
 ### The output
 If the script runs correctly, the output is similar to this. `USER` is your user name.
 
@@ -116,7 +132,7 @@ If the script runs correctly, the output is similar to this. `USER` is your user
 2026-05-15 12:00:00 Fajr:    04:01 hrs
 2026-05-15 12:00:00 Dhuhr:   12:16 hrs
 2026-05-15 12:00:00 Asr:     15:50 hrs
-2026-05-15 12:00:00 Maghrib: 19:03 hrs
+2026-05-15 12:00:00 Maghrib: 19:05 hrs (2 safety minutes added)
 2026-05-15 12:00:00 Isha:    20:32 hrs
 2026-05-15 12:00:00 ---------------------------------
 2026-05-15 12:00:00
@@ -126,7 +142,7 @@ If the script runs correctly, the output is similar to this. `USER` is your user
 2026-05-15 12:00:00 1 4 * * * /home/USER/adhan/playAzaan.sh /home/USER/adhan/media/Adhan-fajr.mp3 0 vlc >> /home/USER/adhan/adhan.log 2>&1 # rpiAdhanClockJob
 2026-05-15 12:00:00 16 12 * * * /home/USER/adhan/playAzaan.sh /home/USER/adhan/media/Adhan-Makkah1.mp3 0 vlc >> /home/USER/adhan/adhan.log 2>&1 # rpiAdhanClockJob
 2026-05-15 12:00:00 50 15 * * * /home/USER/adhan/playAzaan.sh /home/USER/adhan/media/Adhan-Makkah1.mp3 0 vlc >> /home/USER/adhan/adhan.log 2>&1 # rpiAdhanClockJob
-2026-05-15 12:00:00 3 19 * * * /home/USER/adhan/playAzaan.sh /home/USER/adhan/media/Adhan-Makkah1.mp3 0 vlc >> /home/USER/adhan/adhan.log 2>&1 # rpiAdhanClockJob
+2026-05-15 12:00:00 5 19 * * * /home/USER/adhan/playAzaan.sh /home/USER/adhan/media/Adhan-Makkah1.mp3 0 vlc >> /home/USER/adhan/adhan.log 2>&1 # rpiAdhanClockJob
 2026-05-15 12:00:00 32 20 * * * /home/USER/adhan/playAzaan.sh /home/USER/adhan/media/Adhan-Makkah1.mp3 0 vlc >> /home/USER/adhan/adhan.log 2>&1 # rpiAdhanClockJob
 2026-05-15 12:00:00 15 3 * * * /home/USER/adhan/.venv/bin/python /home/USER/adhan/updateAzaanTimers.py >> /home/USER/adhan/adhan.log 2>&1 # rpiAdhanClockJob
 2026-05-15 12:00:00 @reboot /home/USER/adhan/.venv/bin/python /home/USER/adhan/updateAzaanTimers.py --wait-for-time-sync >> /home/USER/adhan/adhan.log 2>&1 # rpiAdhanClockJob
@@ -305,7 +321,8 @@ same numbers work as they did with omxplayer.
 
 ### Offsets
 An offset moves a prayer time by a number of minutes. A positive number makes the adhan
-later. A negative number makes it earlier.
+later. A negative number makes it earlier. The Maghrib offset adds to the
+[2 safety minutes](#maghrib-has-2-safety-minutes) of Maghrib.
 
 | Command line | `adhan.toml` | Values | Default |
 |---|---|---|---|
@@ -422,7 +439,8 @@ A rule plays its file in the same way as an adhan: with `playAzaan.sh`, the sele
 [hooks](#configuring-custom-actions-beforeafter-adhan).
 
 A time before or after a prayer starts from the time of the adhan of that prayer. Thus it
-includes the [offset](#offsets) of that prayer. It is also correct for a prayer that is
+includes the [offset](#offsets) of that prayer, and for Maghrib the
+[2 safety minutes](#maghrib-has-2-safety-minutes). It is also correct for a prayer that is
 [off](#turn-a-prayer-on-or-off). Sunrise has no adhan and no offset. Each night, the script
 calculates the time again, as it does for the adhan.
 
