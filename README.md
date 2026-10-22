@@ -95,11 +95,13 @@ The script uses the timezone of the Raspberry Pi. Make sure that the timezone is
 | `Jafari` | Shia Ithna-Ashari, Leva Institute, Qum | Fajr 16°, Isha 14°, Maghrib 4°, Jafari midnight |
 
 ### Maghrib has 2 safety minutes
-The script adds 2 minutes to the Maghrib time of each method. The methods calculate the
-sunset as if the land at the horizon is at the height of your eyes. When the land at the
-horizon is lower than your eyes, you see the sun for longer, so the sun sets later. For
-example, the land around Bengaluru makes the sunset up to 1 minute later. With the 2
-minutes, the adhan does not play before the sun has set.
+The script adds 2 minutes to the Maghrib time of each method. Most methods put Maghrib at
+the sunset, and calculate the sunset as if the land at the horizon is at the height of
+your eyes. When the land at the horizon is lower than your eyes, you see the sun for
+longer, so the sun sets later. For example, the land around Bengaluru makes the sunset up
+to 1 minute later. With the 2 minutes, the adhan does not play before the sun has set.
+`Tehran` and `Jafari` put Maghrib later, when the sun is 4.5° or 4° below the horizon, so
+for them the 2 minutes are only extra time.
 
 The 2 minutes are enough when your eyes are up to about 160 m above the land at your
 horizon in Bengaluru, and up to about 45 m in London. Far from the equator, the sun goes

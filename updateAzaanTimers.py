@@ -108,11 +108,13 @@ DEFAULT_ASR = 'Standard'
 
 PRAYERS = ('fajr', 'dhuhr', 'asr', 'maghrib', 'isha')
 
-# Minutes added to the Maghrib time of the method (#48). The methods give the
-# sunset with the land at eye level. Where the land at the horizon is lower,
-# the sun sets later, in Bengaluru up to 1 minute later. With these minutes,
-# the adhan does not play before the sun has set. They need no download and
-# no setting. The offset of Maghrib adds to them.
+# Minutes added to the Maghrib time of the method (#48). Most methods give
+# Maghrib at the sunset, with the land at eye level. Where the land at the
+# horizon is lower, the sun sets later, in Bengaluru up to 1 minute later.
+# With these minutes, the adhan does not play before the sun has set. Tehran
+# and Jafari give Maghrib with the sun 4.5 or 4 degrees below the horizon, so
+# for them the minutes are only extra time. They need no download and no
+# setting. The offset of Maghrib adds to them.
 MAGHRIB_SAFETY = 2
 
 # Seconds of silence that playAzaan.sh plays before the adhan, so that a
