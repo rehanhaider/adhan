@@ -7,8 +7,9 @@ recorded from the script before the refactor into a core and a shell (#16).
 #7 removed the job that cleared the log every month. #15 added the update
 after a reboot. #42 moved the settings from settings.ini to adhan.toml. #43
 removed the [surah_baqarah] table, which is a rule now. #29 changed python3
-in the update jobs to the Python of the virtual environment. The
-tests in test_main.py cover the other cases through main() with fakes.
+in the update jobs to the Python of the virtual environment. #48 added 2
+safety minutes to Maghrib. The tests in test_main.py cover the other cases
+through main() with fakes.
 """
 
 import datetime
@@ -24,8 +25,9 @@ OUR_OLD_JOB = '0 5 * * * /home/user/adhan/playAzaan.sh x.mp3 0 vlc # rpiAdhanClo
 FIRST_RUN = ('--lat', '12.8369', '--lon', '77.4089', '--method', 'Karachi',
              '--azaan-volume', '500', '--fajr-azaan-volume', '-500')
 
-# Bengaluru with Karachi on 2026-01-15 in UTC +5:30, as the script gave it
-PRAYER_TIMES = (('5', '31'), ('12', '30'), ('15', '47'), ('18', '13'), ('19', '28'))
+# Bengaluru with Karachi on 2026-01-15 in UTC +5:30, as the script gave it.
+# The script gave Maghrib at 18:13, and #48 added 2 safety minutes.
+PRAYER_TIMES = (('5', '31'), ('12', '30'), ('15', '47'), ('18', '15'), ('19', '28'))
 
 # The adhan.toml that the first run writes. Before #42 the settings were in
 # settings.ini, with the same values.

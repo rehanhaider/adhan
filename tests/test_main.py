@@ -158,6 +158,33 @@ class MainTest(FakesTestCase):
         self.assertEqual(self.runMain(cron=nightly), 0)
         self.assertEqual(nightly.render(), rule.render())
 
+    def test_maghrib_is_two_safety_minutes_after_the_method(self):
+        """C1: the Maghrib adhan is 2 minutes after the time of the method (#48).
+        The method gives the sunset with the land at eye level. When the land
+        at the horizon is lower, the sun sets later: in Bengaluru, up to 1
+        minute later. The 2 minutes do not move the other prayers and are not
+        saved, an offset adds to them, and a rule after Maghrib follows them.
+        The times are from Aladhan, see FIXED_TIMES in test_core.py: Bengaluru,
+        Karachi, 2026-01-15, Maghrib 18:13."""
+        cron = CronTab(tab='')
+
+        def played():
+            # The time of each job that plays a file, as 'HH:MM'
+            return [f'{int(line.split()[1]):02}:{int(line.split()[0]):02}'
+                    for line in cron.render().splitlines() if 'playAzaan.sh' in line]
+
+        self.assertEqual(self.runMain(*FIRST_RUN, cron=cron), 0)
+        self.assertEqual(played(), ['05:31', '12:30', '15:47', '18:15', '19:28'])
+        self.assertIn('Maghrib: 18:15 hrs (2 safety minutes added)\n', self.output.getvalue())
+        self.assertIn(b'[prayers.maghrib]\noffset_minutes = 0\n', self.settings())
+        self.writeSettings(self.settings() + b'\n' + DUA.encode())
+        self.assertEqual(self.runMain('--maghrib-offset', '-2', cron=cron), 0)
+        self.assertEqual(played(), ['05:31', '12:30', '15:47', '18:13', '19:28', '18:23'])
+        self.assertIn('Maghrib: 18:13 hrs (2 safety minutes added, offset -2 minutes)\n',
+                      self.output.getvalue())
+        self.assertIn('Evening dua: maghrib + 10min = 18:23 hrs', self.output.getvalue())
+        self.assertIn(b'[prayers.maghrib]\noffset_minutes = -2\n', self.settings())
+
     def test_second_run_replaces_our_jobs_and_keeps_the_users(self):
         """C3: a second run does not add jobs, and other jobs stay. The old
         job that cleared the log goes (#7). There is one update at 03:15 and
@@ -172,7 +199,8 @@ class MainTest(FakesTestCase):
         self.assertIn(USER_JOB, lines)
         self.assertEqual(len([line for line in lines if 'playAzaan.sh' in line]), 7)
         self.assertEqual(len([line for line in lines if line.startswith('0 7 * * 5 ')]), 1)
-        self.assertEqual(len([line for line in lines if line.startswith('23 18 * * * ')]), 1)
+        # Maghrib is at 18:15 with its 2 safety minutes (#48), so the dua is at 18:25
+        self.assertEqual(len([line for line in lines if line.startswith('25 18 * * * ')]), 1)
         updates = [line for line in lines if 'updateAzaanTimers.py' in line]
         self.assertEqual([line.split()[0] for line in updates], ['15', '@reboot'])
         for line in updates:

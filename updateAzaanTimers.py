@@ -108,6 +108,15 @@ DEFAULT_ASR = 'Standard'
 
 PRAYERS = ('fajr', 'dhuhr', 'asr', 'maghrib', 'isha')
 
+# Minutes added to the Maghrib time of the method (#48). Most methods give
+# Maghrib at the sunset, with the land at eye level. Where the land at the
+# horizon is lower, the sun sets later, in Bengaluru up to 1 minute later.
+# With these minutes, the adhan does not play before the sun has set. Tehran
+# and Jafari give Maghrib with the sun 4.5 or 4 degrees below the horizon, so
+# for them the minutes are only extra time. They need no download and no
+# setting. The offset of Maghrib adds to them.
+MAGHRIB_SAFETY = 2
+
 # Seconds of silence that playAzaan.sh plays before the adhan, so that a
 # speaker that is slow to wake up does not lose the start of it (#14). 0 adds
 # no silence. More than MAX_LEADIN is probably a typo, and delays the adhan.
@@ -1010,8 +1019,9 @@ def main(argv=None, settings_path=None, cron=None, today=None, utcOffset=None,
         checkAudio(settings, root_dir)
         # Calculate the times before the save too, so a location where a time
         # cannot be calculated is not saved for the nightly update (#31)
+        offsets = dict(settings.offsets, maghrib=settings.offsets['maghrib'] + MAGHRIB_SAFETY)
         times = prayerTimes(settings.lat, settings.lon, settings.method, today, utcOffset,
-                            settings.offsets, settings.asr)
+                            offsets, settings.asr)
         # And the jobs, so a rule with a time that is not in the day is not
         # saved either (#43)
         jobs = buildJobs(times, settings, root_dir, today)
@@ -1031,6 +1041,8 @@ def main(argv=None, settings_path=None, cron=None, today=None, utcOffset=None,
     log("---------------------------------")
     for name in PRAYERS:
         notes = []
+        if name == 'maghrib':
+            notes.append(f"{MAGHRIB_SAFETY} safety minutes added")
         if settings.offsets[name]:
             notes.append(f"offset {settings.offsets[name]:+d} minutes")
         if not settings.enabled[name]:
